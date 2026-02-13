@@ -67,12 +67,12 @@ async function checkUserActive(username) {
 async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
-      .setName('verify')
-      .setDescription('Verify if an Acebet user is active under code R2K2')
+      .setName('acebet')
+      .setDescription('Check if an Acebet user is active under code R2K2')
       .addStringOption(option =>
         option
           .setName('username')
-          .setDescription('Acebet username to verify')
+          .setDescription('Acebet username to check')
           .setRequired(true)
       ),
   ].map(command => command.toJSON());
@@ -97,7 +97,7 @@ async function registerCommands() {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === 'verify') {
+  if (interaction.commandName === 'acebet') {
     const username = interaction.options.getString('username');
 
     // Defer reply since API call might take a moment
