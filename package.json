@@ -1,0 +1,20 @@
+{
+  "name": "r2k2-verify-bot",
+  "version": "1.0.0",
+  "description": "Discord bot to verify Acebet users under code R2K2",
+  "main": "discord-verify-bot.js",
+  "scripts": {
+    "start": "node discord-verify-bot.js",
+    "dev": "nodemon discord-verify-bot.js"
+  },
+  "keywords": ["discord", "bot", "acebet", "verification"],
+  "author": "R2K2",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
