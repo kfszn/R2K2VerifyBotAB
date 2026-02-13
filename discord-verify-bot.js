@@ -4,7 +4,6 @@ require('dotenv').config();
 // Configuration
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID; // Your Discord server ID
 const ACEBET_TOKEN = process.env.ACEBET_TOKEN;
 const WAGER_WINDOW_START = process.env.WAGER_WINDOW_START || '2025-01-01'; // Adjust as needed
 
@@ -82,8 +81,9 @@ async function registerCommands() {
   try {
     console.log('Started refreshing application (/) commands.');
 
+    // Use global commands instead of guild-specific
     await rest.put(
-      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+      Routes.applicationCommands(CLIENT_ID),
       { body: commands },
     );
 
