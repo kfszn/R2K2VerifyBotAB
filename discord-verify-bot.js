@@ -153,6 +153,15 @@ async function registerCommands() {
           .setDescription('Discord user to unlink')
           .setRequired(true)
       ),
+    new SlashCommandBuilder()
+      .setName('checklink')
+      .setDescription('Check which Acebet account a Discord user is linked to (Staff only)')
+      .addUserOption(option =>
+        option
+          .setName('discord_user')
+          .setDescription('Discord user to check')
+          .setRequired(true)
+      ),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
@@ -185,7 +194,7 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   // Commands that require staff/owner role
-  const staffOnlyCommands = ['acebet', 'wager', 'linkuser', 'unlinkuser'];
+  const staffOnlyCommands = ['acebet', 'wager', 'linkuser', 'unlinkuser', 'checklink'];
   
   if (staffOnlyCommands.includes(interaction.commandName)) {
     // Check if user has staff or owner role
@@ -435,6 +444,26 @@ client.on('interactionCreate', async interaction => {
     } catch (error) {
       console.error('Error in unlinkuser command:', error);
       await interaction.editReply('❌ An error occurred while unlinking the user.');
+    }
+  }
+
+  if (interaction.commandName === 'checklink') {
+    const targetUser = interaction.options.getUser('discord_user');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const links = await loadLinks();
+
+      if (!links[targetUser.id]) {
+        await interaction.editReply(`❌ <@${targetUser.id}> is not linked to any Acebet account.`);
+        return;
+      }
+
+      await interaction.editReply(`<@${targetUser.id}> is linked to Acebet username **${links[targetUser.id]}**`);
+    } catch (error) {
+      console.error('Error in checklink command:', error);
+      await interaction.editReply('❌ An error occurred while checking the link.');
     }
   }
 });
