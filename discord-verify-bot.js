@@ -76,24 +76,20 @@ async function registerCommands() {
       ),
     new SlashCommandBuilder()
       .setName('wager')
-      .setDescription('Get wager report for an Acebet user')
+      .setDescription('Get wager report for an Acebet user by period')
       .addStringOption(option =>
         option
           .setName('username')
           .setDescription('Acebet username')
           .setRequired(true)
       )
-      .addStringOption(option =>
+      .addIntegerOption(option =>
         option
-          .setName('start_date')
-          .setDescription('Start date (YYYY-MM-DD)')
+          .setName('period')
+          .setDescription('Period number (1-12)')
           .setRequired(true)
-      )
-      .addStringOption(option =>
-        option
-          .setName('end_date')
-          .setDescription('End date (YYYY-MM-DD)')
-          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(12)
       ),
   ].map(command => command.toJSON());
 
@@ -151,21 +147,36 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'wager') {
     const username = interaction.options.getString('username');
-    const startDate = interaction.options.getString('start_date');
-    const endDate = interaction.options.getString('end_date');
+    const period = interaction.options.getInteger('period');
 
     await interaction.deferReply();
 
     try {
-      // Validate date format
-      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-      if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
-        await interaction.editReply('❌ Invalid date format. Use YYYY-MM-DD (e.g., 2025-01-01)');
-        return;
-      }
+      // Calculate date range based on period
+      // Period 1 starts on Dec 26, 2025
+      const periodStartBase = new Date('2025-12-26');
+      
+      // Calculate start date: base + (period - 1) * 30 days
+      const startDate = new Date(periodStartBase);
+      startDate.setDate(startDate.getDate() + ((period - 1) * 30));
+      
+      // Calculate end date: start + 29 days (30 day period inclusive)
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + 29);
+      
+      // Format dates as YYYY-MM-DD
+      const formatDate = (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
+      
+      const startDateStr = formatDate(startDate);
+      const endDateStr = formatDate(endDate);
 
       // Fetch user data from start date
-      const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${startDate}`;
+      const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${startDateStr}`;
       const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${ACEBET_TOKEN}`,
@@ -192,7 +203,7 @@ client.on('interactionCreate', async interaction => {
         maximumFractionDigits: 2
       });
 
-      const report = `**${username} Wager Report**\nPeriod: ${startDate} - ${endDate}\nTotal Wagered: $${formattedWager}`;
+      const report = `**${username} Wager Report**\nPeriod ${period}: ${startDateStr} - ${endDateStr}\nTotal Wagered: $${formattedWager}`;
       
       await interaction.editReply(report);
 
