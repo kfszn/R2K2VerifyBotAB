@@ -160,7 +160,15 @@ async function registerCommands() {
   try {
     console.log('Started refreshing application (/) commands.');
 
-    // Use guild-specific commands for instant registration
+    // Clear existing guild commands first to prevent duplicates
+    await rest.put(
+      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+      { body: [] },
+    );
+
+    console.log('Cleared existing commands.');
+
+    // Register new commands
     await rest.put(
       Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
       { body: commands },
