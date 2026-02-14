@@ -167,7 +167,7 @@ client.on('interactionCreate', async interaction => {
       // Period 1 starts on Dec 26, 2025
       const periodStartBase = new Date('2025-12-26');
       
-      // Calculate start date: base + (period - 1) * 30 days
+      // Calculate start date for current period: base + (period - 1) * 30 days
       const startDate = new Date(periodStartBase);
       startDate.setDate(startDate.getDate() + ((period - 1) * 30));
       
@@ -186,30 +186,61 @@ client.on('interactionCreate', async interaction => {
       const startDateStr = formatDate(startDate);
       const endDateStr = formatDate(endDate);
 
-      // Fetch user data from start date
-      const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${startDateStr}`;
-      const response = await fetch(url, {
+      // Fetch current period data (cumulative from period start)
+      const currentUrl = `https://api.acebet.com/affiliates/detailed-summary/v2/${startDateStr}`;
+      const currentResponse = await fetch(currentUrl, {
         headers: {
           Authorization: `Bearer ${ACEBET_TOKEN}`,
         },
         cache: "no-store",
       });
 
-      if (!response.ok) {
+      if (!currentResponse.ok) {
         await interaction.editReply('❌ Error fetching data from API. Please try again later.');
         return;
       }
 
-      const users = await response.json();
-      const user = users.find(u => u.name.toLowerCase() === username.toLowerCase());
+      const currentUsers = await currentResponse.json();
+      const currentUser = currentUsers.find(u => u.name.toLowerCase() === username.toLowerCase());
 
-      if (!user) {
+      if (!currentUser) {
         await interaction.editReply(`❌ User **${username}** not found under code R2K2`);
         return;
       }
 
+      let periodWager = currentUser.wagered;
+
+      // If not period 1, subtract previous period's cumulative total
+      if (period > 1) {
+        // Calculate previous period start date
+        const prevStartDate = new Date(periodStartBase);
+        prevStartDate.setDate(prevStartDate.getDate() + ((period - 2) * 30));
+        prevStartDate.setDate(prevStartDate.getDate() + 30); // Start of current period = end of previous + 1
+        
+        const prevDateStr = formatDate(prevStartDate);
+        
+        // Fetch previous period cumulative data
+        const prevUrl = `https://api.acebet.com/affiliates/detailed-summary/v2/${prevDateStr}`;
+        const prevResponse = await fetch(prevUrl, {
+          headers: {
+            Authorization: `Bearer ${ACEBET_TOKEN}`,
+          },
+          cache: "no-store",
+        });
+
+        if (prevResponse.ok) {
+          const prevUsers = await prevResponse.json();
+          const prevUser = prevUsers.find(u => u.name.toLowerCase() === username.toLowerCase());
+          
+          if (prevUser) {
+            // Period wager = current cumulative - previous cumulative
+            periodWager = currentUser.wagered - prevUser.wagered;
+          }
+        }
+      }
+
       // Format the wager amount with commas (divide by 100 since API returns pennies)
-      const wagerInDollars = user.wagered / 100;
+      const wagerInDollars = periodWager / 100;
       const formattedWager = wagerInDollars.toLocaleString('en-US', {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
