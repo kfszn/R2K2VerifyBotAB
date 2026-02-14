@@ -197,8 +197,9 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      // Format the wager amount with commas
-      const formattedWager = user.wagered.toLocaleString('en-US', {
+      // Format the wager amount with commas (divide by 100 since API returns pennies)
+      const wagerInDollars = user.wagered / 100;
+      const formattedWager = wagerInDollars.toLocaleString('en-US', {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
       });
