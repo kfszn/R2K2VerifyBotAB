@@ -252,59 +252,51 @@ client.on('interactionCreate', async interaction => {
       const startDateStr = formatDate(startDate);
       const endDateStr = formatDate(endDate);
 
-      // Fetch current period data (cumulative from period start)
-      const currentUrl = `https://api.acebet.com/affiliates/detailed-summary/v2/${startDateStr}`;
-      const currentResponse = await fetch(currentUrl, {
-        headers: {
-          Authorization: `Bearer ${ACEBET_TOKEN}`,
-        },
-        cache: "no-store",
-      });
+      // Aggregate snapshots across date range
+      let userFound = false;
+      let maxWagered = 0;
+      let minWagered = Infinity;
+      let userName = username;
 
-      if (!currentResponse.ok) {
-        await interaction.editReply('❌ Error fetching data from API. Please try again later.');
-        return;
-      }
-
-      const currentUsers = await currentResponse.json();
-      const currentUser = currentUsers.find(u => u.name.toLowerCase() === username.toLowerCase());
-
-      if (!currentUser) {
-        await interaction.editReply(`❌ User **${username}** not found under code R2K2`);
-        return;
-      }
-
-      let periodWager = currentUser.wagered;
-
-      // If not period 1, subtract previous period's cumulative total
-      if (period > 1) {
-        // For period 2+, we need cumulative data from the START of current period
-        // which equals cumulative through end of previous period
-        // So we fetch from one day before current period start
-        const oneDayBeforeStart = new Date(startDate);
-        oneDayBeforeStart.setDate(oneDayBeforeStart.getDate() - 1);
+      // Loop through each day in the period
+      for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+        const dateStr = formatDate(d);
         
-        const prevDateStr = formatDate(oneDayBeforeStart);
-        
-        // Fetch cumulative data from before this period started
-        const prevUrl = `https://api.acebet.com/affiliates/detailed-summary/v2/${prevDateStr}`;
-        const prevResponse = await fetch(prevUrl, {
+        const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${dateStr}`;
+        const response = await fetch(url, {
           headers: {
             Authorization: `Bearer ${ACEBET_TOKEN}`,
           },
           cache: "no-store",
         });
 
-        if (prevResponse.ok) {
-          const prevUsers = await prevResponse.json();
-          const prevUser = prevUsers.find(u => u.name.toLowerCase() === username.toLowerCase());
+        if (response.ok) {
+          const snapshot = await response.json();
+          const user = snapshot.find(u => u.name?.toLowerCase() === username.toLowerCase());
           
-          if (prevUser) {
-            // Period wager = current cumulative - previous cumulative
-            periodWager = currentUser.wagered - prevUser.wagered;
+          if (user) {
+            userFound = true;
+            userName = user.name; // Use exact capitalization from API
+            
+            // Track min/max wagered for this user
+            if (user.wagered > maxWagered) {
+              maxWagered = user.wagered;
+            }
+            if (user.wagered < minWagered) {
+              minWagered = user.wagered;
+            }
           }
         }
       }
+
+      if (!userFound) {
+        await interaction.editReply(`❌ User **${username}** not found under code R2K2 for this period`);
+        return;
+      }
+
+      // Calculate period wager as difference between max and min cumulative wager
+      // This represents the actual wager activity during this period
+      const periodWager = maxWagered - (minWagered === Infinity ? 0 : minWagered);
 
       // Format the wager amount with commas (divide by 100 since API returns pennies)
       const wagerInDollars = periodWager / 100;
@@ -313,7 +305,7 @@ client.on('interactionCreate', async interaction => {
         maximumFractionDigits: 2
       });
 
-      const report = `**${username} Wager Report**\nPeriod ${period}: ${startDateStr} - ${endDateStr}\nTotal Wagered: $${formattedWager}`;
+      const report = `**${userName} Wager Report**\nPeriod ${period}: ${startDateStr} - ${endDateStr}\nTotal Wagered: $${formattedWager}`;
       
       await interaction.editReply(report);
 
