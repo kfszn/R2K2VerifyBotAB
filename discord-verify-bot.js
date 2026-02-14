@@ -114,6 +114,17 @@ async function registerCommands() {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
+  // Check if user has staff or owner role
+  const allowedRoles = ['staff', 'owner']; // Change these to your exact role names (case-sensitive)
+  const hasPermission = interaction.member.roles.cache.some(role => 
+    allowedRoles.some(allowedRole => role.name.toLowerCase() === allowedRole.toLowerCase())
+  );
+
+  if (!hasPermission) {
+    await interaction.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
+    return;
+  }
+
   if (interaction.commandName === 'acebet') {
     const username = interaction.options.getString('username');
 
