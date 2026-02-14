@@ -74,6 +74,27 @@ async function registerCommands() {
           .setDescription('Acebet username to check')
           .setRequired(true)
       ),
+    new SlashCommandBuilder()
+      .setName('wager')
+      .setDescription('Get wager report for an Acebet user')
+      .addStringOption(option =>
+        option
+          .setName('username')
+          .setDescription('Acebet username')
+          .setRequired(true)
+      )
+      .addStringOption(option =>
+        option
+          .setName('start_date')
+          .setDescription('Start date (YYYY-MM-DD)')
+          .setRequired(true)
+      )
+      .addStringOption(option =>
+        option
+          .setName('end_date')
+          .setDescription('End date (YYYY-MM-DD)')
+          .setRequired(true)
+      ),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
@@ -123,8 +144,61 @@ client.on('interactionCreate', async interaction => {
       }
 
     } catch (error) {
-      console.error('Error in verify command:', error);
+      console.error('Error in acebet command:', error);
       await interaction.editReply('❌ An error occurred while verifying the user.');
+    }
+  }
+
+  if (interaction.commandName === 'wager') {
+    const username = interaction.options.getString('username');
+    const startDate = interaction.options.getString('start_date');
+    const endDate = interaction.options.getString('end_date');
+
+    await interaction.deferReply();
+
+    try {
+      // Validate date format
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
+        await interaction.editReply('❌ Invalid date format. Use YYYY-MM-DD (e.g., 2025-01-01)');
+        return;
+      }
+
+      // Fetch user data from start date
+      const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${startDate}`;
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${ACEBET_TOKEN}`,
+        },
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        await interaction.editReply('❌ Error fetching data from API. Please try again later.');
+        return;
+      }
+
+      const users = await response.json();
+      const user = users.find(u => u.name.toLowerCase() === username.toLowerCase());
+
+      if (!user) {
+        await interaction.editReply(`❌ User **${username}** not found under code R2K2`);
+        return;
+      }
+
+      // Format the wager amount with commas
+      const formattedWager = user.wagered.toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+
+      const report = `**${username} Wager Report**\nPeriod: ${startDate} - ${endDate}\nTotal Wagered: $${formattedWager}`;
+      
+      await interaction.editReply(report);
+
+    } catch (error) {
+      console.error('Error in wager command:', error);
+      await interaction.editReply('❌ An error occurred while fetching wager data.');
     }
   }
 });
