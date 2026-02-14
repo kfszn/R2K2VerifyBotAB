@@ -33,6 +33,26 @@ async function saveLinks(links) {
   }
 }
 
+// Resolve Discord user mention or Acebet username
+async function resolveToAcebetUsername(input) {
+  // Check if input is a Discord user mention format: <@USER_ID> or <@!USER_ID>
+  const mentionMatch = input.match(/^<@!?(\d+)>$/);
+  
+  if (mentionMatch) {
+    // It's a Discord mention - look up their linked Acebet username
+    const userId = mentionMatch[1];
+    const links = await loadLinks();
+    
+    if (links[userId]) {
+      return links[userId];
+    }
+    return null; // User not linked
+  }
+  
+  // Not a mention, treat as direct Acebet username
+  return input;
+}
+
 // Create Discord client
 const client = new Client({
   intents: [
@@ -96,18 +116,30 @@ async function registerCommands() {
       .setDescription('Check if an Acebet user is active under code R2K2')
       .addStringOption(option =>
         option
-          .setName('username')
-          .setDescription('Acebet username to check')
-          .setRequired(true)
+          .setName('acebet_username')
+          .setDescription('Acebet username (leave blank if using discord_user)')
+          .setRequired(false)
+      )
+      .addUserOption(option =>
+        option
+          .setName('discord_user')
+          .setDescription('Discord user (leave blank if using acebet_username)')
+          .setRequired(false)
       ),
     new SlashCommandBuilder()
       .setName('wager')
       .setDescription('Get wager report for an Acebet user by period')
       .addStringOption(option =>
         option
-          .setName('username')
-          .setDescription('Acebet username')
-          .setRequired(true)
+          .setName('acebet_username')
+          .setDescription('Acebet username (leave blank if using discord_user)')
+          .setRequired(false)
+      )
+      .addUserOption(option =>
+        option
+          .setName('discord_user')
+          .setDescription('Discord user (leave blank if using acebet_username)')
+          .setRequired(false)
       )
       .addIntegerOption(option =>
         option
@@ -210,12 +242,35 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (interaction.commandName === 'acebet') {
-    const username = interaction.options.getString('username');
+    const acebetUsername = interaction.options.getString('acebet_username');
+    const discordUser = interaction.options.getUser('discord_user');
 
     // Defer reply since API call might take a moment
     await interaction.deferReply();
 
     try {
+      let username;
+
+      // Check if both or neither are provided
+      if ((acebetUsername && discordUser) || (!acebetUsername && !discordUser)) {
+        await interaction.editReply('❌ Please provide EITHER an Acebet username OR a Discord user, not both or neither.');
+        return;
+      }
+
+      // If Discord user is provided, look up their linked Acebet username
+      if (discordUser) {
+        const links = await loadLinks();
+        username = links[discordUser.id];
+        
+        if (!username) {
+          await interaction.editReply(`❌ <@${discordUser.id}> is not linked to an Acebet account. They need to use \`/link\` first.`);
+          return;
+        }
+      } else {
+        // Use the provided Acebet username directly
+        username = acebetUsername;
+      }
+
       const result = await checkUserActive(username);
 
       if (result.error) {
@@ -241,12 +296,35 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (interaction.commandName === 'wager') {
-    const username = interaction.options.getString('username');
+    const acebetUsername = interaction.options.getString('acebet_username');
+    const discordUser = interaction.options.getUser('discord_user');
     const period = interaction.options.getInteger('period');
 
     await interaction.deferReply();
 
     try {
+      let username;
+
+      // Check if both or neither are provided
+      if ((acebetUsername && discordUser) || (!acebetUsername && !discordUser)) {
+        await interaction.editReply('❌ Please provide EITHER an Acebet username OR a Discord user, not both or neither.');
+        return;
+      }
+
+      // If Discord user is provided, look up their linked Acebet username
+      if (discordUser) {
+        const links = await loadLinks();
+        username = links[discordUser.id];
+        
+        if (!username) {
+          await interaction.editReply(`❌ <@${discordUser.id}> is not linked to an Acebet account. They need to use \`/link\` first.`);
+          return;
+        }
+      } else {
+        // Use the provided Acebet username directly
+        username = acebetUsername;
+      }
+
       // Calculate date range based on period
       // Period 1 starts on Dec 26, 2025
       const periodStartBase = new Date('2025-12-26');
