@@ -1,4 +1,6 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require('discord.js');
+const fs = require('fs').promises;
+const path = require('path');
 require('dotenv').config();
 
 // Configuration
@@ -6,6 +8,29 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const ACEBET_TOKEN = process.env.ACEBET_TOKEN;
 const WAGER_WINDOW_START = process.env.WAGER_WINDOW_START || '2025-01-01'; // Adjust as needed
+
+// Links storage file
+const LINKS_FILE = path.join(__dirname, 'acebet_links.json');
+
+// Load links from file
+async function loadLinks() {
+  try {
+    const data = await fs.readFile(LINKS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    // If file doesn't exist, return empty object
+    return {};
+  }
+}
+
+// Save links to file
+async function saveLinks(links) {
+  try {
+    await fs.writeFile(LINKS_FILE, JSON.stringify(links, null, 2));
+  } catch (error) {
+    console.error('Error saving links:', error);
+  }
+}
 
 // Create Discord client
 const client = new Client({
@@ -91,6 +116,42 @@ async function registerCommands() {
           .setMinValue(1)
           .setMaxValue(12)
       ),
+    new SlashCommandBuilder()
+      .setName('link')
+      .setDescription('Link your Discord account to your Acebet username')
+      .addStringOption(option =>
+        option
+          .setName('acebet_username')
+          .setDescription('Your Acebet username')
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName('linkuser')
+      .setDescription('Manually link a Discord user to an Acebet username (Staff only)')
+      .addUserOption(option =>
+        option
+          .setName('discord_user')
+          .setDescription('Discord user to link')
+          .setRequired(true)
+      )
+      .addStringOption(option =>
+        option
+          .setName('acebet_username')
+          .setDescription('Acebet username')
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName('unlink')
+      .setDescription('Unlink your Discord account from your Acebet username'),
+    new SlashCommandBuilder()
+      .setName('unlinkuser')
+      .setDescription('Manually unlink a Discord user (Staff only)')
+      .addUserOption(option =>
+        option
+          .setName('discord_user')
+          .setDescription('Discord user to unlink')
+          .setRequired(true)
+      ),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
@@ -114,15 +175,20 @@ async function registerCommands() {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  // Check if user has staff or owner role
-  const allowedRoles = ['staff', 'owner']; // Change these to your exact role names (case-sensitive)
-  const hasPermission = interaction.member.roles.cache.some(role => 
-    allowedRoles.some(allowedRole => role.name.toLowerCase() === allowedRole.toLowerCase())
-  );
+  // Commands that require staff/owner role
+  const staffOnlyCommands = ['acebet', 'wager', 'linkuser', 'unlinkuser'];
+  
+  if (staffOnlyCommands.includes(interaction.commandName)) {
+    // Check if user has staff or owner role
+    const allowedRoles = ['staff', 'owner']; // Change these to your exact role names (case-sensitive)
+    const hasPermission = interaction.member.roles.cache.some(role => 
+      allowedRoles.some(allowedRole => role.name.toLowerCase() === allowedRole.toLowerCase())
+    );
 
-  if (!hasPermission) {
-    await interaction.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
-    return;
+    if (!hasPermission) {
+      await interaction.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
+      return;
+    }
   }
 
   if (interaction.commandName === 'acebet') {
@@ -212,14 +278,15 @@ client.on('interactionCreate', async interaction => {
 
       // If not period 1, subtract previous period's cumulative total
       if (period > 1) {
-        // Calculate previous period start date
-        const prevStartDate = new Date(periodStartBase);
-        prevStartDate.setDate(prevStartDate.getDate() + ((period - 2) * 30));
-        prevStartDate.setDate(prevStartDate.getDate() + 30); // Start of current period = end of previous + 1
+        // For period 2+, we need cumulative data from the START of current period
+        // which equals cumulative through end of previous period
+        // So we fetch from one day before current period start
+        const oneDayBeforeStart = new Date(startDate);
+        oneDayBeforeStart.setDate(oneDayBeforeStart.getDate() - 1);
         
-        const prevDateStr = formatDate(prevStartDate);
+        const prevDateStr = formatDate(oneDayBeforeStart);
         
-        // Fetch previous period cumulative data
+        // Fetch cumulative data from before this period started
         const prevUrl = `https://api.acebet.com/affiliates/detailed-summary/v2/${prevDateStr}`;
         const prevResponse = await fetch(prevUrl, {
           headers: {
@@ -253,6 +320,120 @@ client.on('interactionCreate', async interaction => {
     } catch (error) {
       console.error('Error in wager command:', error);
       await interaction.editReply('❌ An error occurred while fetching wager data.');
+    }
+  }
+
+  if (interaction.commandName === 'link') {
+    const acebetUsername = interaction.options.getString('acebet_username');
+    const discordId = interaction.user.id;
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      // Verify the Acebet username exists in the API
+      const users = await getAcebetUsers();
+      const user = users.find(u => u.name.toLowerCase() === acebetUsername.toLowerCase());
+
+      if (!user) {
+        await interaction.editReply(`❌ Acebet username **${acebetUsername}** not found under code R2K2.`);
+        return;
+      }
+
+      // Load existing links
+      const links = await loadLinks();
+
+      // Check if user is already linked
+      if (links[discordId]) {
+        await interaction.editReply(`❌ You are already linked to **${links[discordId]}**. Use \`/unlink\` first to change your linked account.`);
+        return;
+      }
+
+      // Save the link
+      links[discordId] = user.name; // Use the exact username from API
+      await saveLinks(links);
+
+      await interaction.editReply(`✅ Successfully linked your Discord account to Acebet username **${user.name}**`);
+    } catch (error) {
+      console.error('Error in link command:', error);
+      await interaction.editReply('❌ An error occurred while linking your account.');
+    }
+  }
+
+  if (interaction.commandName === 'linkuser') {
+    const targetUser = interaction.options.getUser('discord_user');
+    const acebetUsername = interaction.options.getString('acebet_username');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      // Verify the Acebet username exists in the API
+      const users = await getAcebetUsers();
+      const user = users.find(u => u.name.toLowerCase() === acebetUsername.toLowerCase());
+
+      if (!user) {
+        await interaction.editReply(`❌ Acebet username **${acebetUsername}** not found under code R2K2.`);
+        return;
+      }
+
+      // Load existing links
+      const links = await loadLinks();
+
+      // Save the link
+      links[targetUser.id] = user.name;
+      await saveLinks(links);
+
+      await interaction.editReply(`✅ Successfully linked <@${targetUser.id}> to Acebet username **${user.name}**`);
+    } catch (error) {
+      console.error('Error in linkuser command:', error);
+      await interaction.editReply('❌ An error occurred while linking the user.');
+    }
+  }
+
+  if (interaction.commandName === 'unlink') {
+    const discordId = interaction.user.id;
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const links = await loadLinks();
+
+      if (!links[discordId]) {
+        await interaction.editReply('❌ You are not currently linked to any Acebet account.');
+        return;
+      }
+
+      const oldUsername = links[discordId];
+      delete links[discordId];
+      await saveLinks(links);
+
+      await interaction.editReply(`✅ Successfully unlinked your account from **${oldUsername}**`);
+    } catch (error) {
+      console.error('Error in unlink command:', error);
+      await interaction.editReply('❌ An error occurred while unlinking your account.');
+    }
+  }
+
+  if (interaction.commandName === 'unlinkuser') {
+    const targetUser = interaction.options.getUser('discord_user');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const links = await loadLinks();
+
+      if (!links[targetUser.id]) {
+        await interaction.editReply(`❌ <@${targetUser.id}> is not currently linked to any Acebet account.`);
+        return;
+      }
+
+      const oldUsername = links[targetUser.id];
+      delete links[targetUser.id];
+      await saveLinks(links);
+
+      await interaction.editReply(`✅ Successfully unlinked <@${targetUser.id}> from **${oldUsername}**`);
+    } catch (error) {
+      console.error('Error in unlinkuser command:', error);
+      await interaction.editReply('❌ An error occurred while unlinking the user.');
     }
   }
 });
