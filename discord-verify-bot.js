@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
+const cron = require('node-cron');
 require('dotenv').config();
 
 // Configuration
@@ -9,6 +10,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const ACEBET_TOKEN = process.env.ACEBET_TOKEN;
 const WAGER_WINDOW_START = process.env.WAGER_WINDOW_START || '2025-01-01'; // Adjust as needed
+const OWNER_DISCORD_ID = '687823175647887394'; // Your Discord ID
 
 // Links storage file
 const LINKS_FILE = path.join(__dirname, 'acebet_links.json');
@@ -31,6 +33,122 @@ async function saveLinks(links) {
   } catch (error) {
     console.error('Error saving links:', error);
   }
+}
+
+// Get weekly stats for Sunday report
+async function getWeeklyStats() {
+  try {
+    // Get current date (should be Sunday when this runs)
+    const today = new Date();
+    
+    // Calculate last Sunday (start of previous week)
+    const lastSunday = new Date(today);
+    lastSunday.setDate(today.getDate() - 7);
+    
+    // Calculate last Saturday (end of previous week)
+    const lastSaturday = new Date(today);
+    lastSaturday.setDate(today.getDate() - 1);
+    
+    // Format dates
+    const formatDate = (date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+    
+    const sundayStr = formatDate(lastSunday);
+    const saturdayStr = formatDate(lastSaturday);
+    
+    // Aggregate data across the week
+    let totalWagered = 0;
+    let totalDeposits = 0;
+    let totalEarned = 0;
+    let activeMembers = new Set();
+    
+    for (let d = new Date(lastSunday); d <= lastSaturday; d.setDate(d.getDate() + 1)) {
+      const dateStr = formatDate(d);
+      
+      const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${dateStr}`;
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${ACEBET_TOKEN}`,
+        },
+        cache: "no-store",
+      });
+      
+      if (response.ok) {
+        const snapshot = await response.json();
+        
+        snapshot.forEach(user => {
+          if (user.active) {
+            activeMembers.add(user.userId);
+          }
+          
+          // Track max values across the week
+          totalWagered = Math.max(totalWagered, user.wagered || 0);
+          totalDeposits = Math.max(totalDeposits, user.deposited || 0);
+          totalEarned += (user.earned || 0);
+        });
+      }
+    }
+    
+    return {
+      weekStart: sundayStr,
+      weekEnd: saturdayStr,
+      totalWagered: totalWagered / 100, // Convert from pennies
+      totalDeposits: totalDeposits / 100,
+      affiliateIncome: totalEarned / 100,
+      activeMembers: activeMembers.size,
+    };
+  } catch (error) {
+    console.error('Error getting weekly stats:', error);
+    throw error;
+  }
+}
+
+// Send weekly summary DM
+async function sendWeeklySummary() {
+  try {
+    const stats = await getWeeklyStats();
+    
+    const owner = await client.users.fetch(OWNER_DISCORD_ID);
+    
+    const message = `
+📊 **R2K2 Weekly Summary**
+Week: ${stats.weekStart} to ${stats.weekEnd}
+
+💰 **Total Wagered:** $${stats.totalWagered.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+💳 **Total Deposits:** $${stats.totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+👥 **Active Referrals:** ${stats.activeMembers}
+💵 **Affiliate Income:** $${stats.affiliateIncome.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+    `.trim();
+    
+    await owner.send(message);
+    console.log('Weekly summary sent successfully!');
+  } catch (error) {
+    console.error('Error sending weekly summary:', error);
+  }
+}
+
+// Resolve Discord user mention or Acebet username
+async function resolveToAcebetUsername(input) {
+  // Check if input is a Discord user mention format: <@USER_ID> or <@!USER_ID>
+  const mentionMatch = input.match(/^<@!?(\d+)>$/);
+  
+  if (mentionMatch) {
+    // It's a Discord mention - look up their linked Acebet username
+    const userId = mentionMatch[1];
+    const links = await loadLinks();
+    
+    if (links[userId]) {
+      return links[userId];
+    }
+    return null; // User not linked
+  }
+  
+  // Not a mention, treat as direct Acebet username
+  return input;
 }
 
 // Create Discord client
@@ -97,7 +215,7 @@ async function registerCommands() {
       .addStringOption(option =>
         option
           .setName('username')
-          .setDescription('Acebet username to check')
+          .setDescription('Acebet username')
           .setRequired(true)
       ),
     new SlashCommandBuilder()
@@ -162,6 +280,9 @@ async function registerCommands() {
           .setDescription('Discord user to check')
           .setRequired(true)
       ),
+    new SlashCommandBuilder()
+      .setName('summary')
+      .setDescription('Get weekly stats summary (Owner only)'),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
@@ -466,12 +587,56 @@ client.on('interactionCreate', async interaction => {
       await interaction.editReply('❌ An error occurred while checking the link.');
     }
   }
+
+  if (interaction.commandName === 'summary') {
+    // Owner-only command
+    if (interaction.user.id !== OWNER_DISCORD_ID) {
+      await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const stats = await getWeeklyStats();
+      
+      const message = `
+📊 **R2K2 Weekly Summary**
+Week: ${stats.weekStart} to ${stats.weekEnd}
+
+💰 **Total Wagered:** $${stats.totalWagered.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+💳 **Total Deposits:** $${stats.totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+👥 **Active Referrals:** ${stats.activeMembers}
+💵 **Affiliate Income:** $${stats.affiliateIncome.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      `.trim();
+      
+      await interaction.editReply(message);
+      
+      // Also send DM
+      await interaction.user.send(message);
+    } catch (error) {
+      console.error('Error in summary command:', error);
+      await interaction.editReply('❌ An error occurred while generating the summary.');
+    }
+  }
 });
 
 // Bot ready event
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`Bot is ready to verify users under code R2K2`);
+  
+  // Schedule weekly summary every Sunday at 10:00 AM EST
+  // Cron format: minute hour day month dayOfWeek
+  // 0 = Sunday, 0 10 = 10:00 AM
+  cron.schedule('0 10 * * 0', () => {
+    console.log('Running weekly summary...');
+    sendWeeklySummary();
+  }, {
+    timezone: "America/New_York" // EST/EDT
+  });
+  
+  console.log('📅 Weekly summary scheduled for Sundays at 10:00 AM EST');
 });
 
 // Login and register commands
