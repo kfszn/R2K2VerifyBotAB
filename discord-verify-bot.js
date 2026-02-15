@@ -60,11 +60,8 @@ async function getWeeklyStats() {
     const sundayStr = formatDate(lastSunday);
     const saturdayStr = formatDate(lastSaturday);
     
-    // Aggregate data across the week
-    let totalWagered = 0;
-    let totalDeposits = 0;
-    let totalEarned = 0;
-    let activeMembers = new Set();
+    // Track min/max wagered per user
+    const userStats = {};
     
     for (let d = new Date(lastSunday); d <= lastSaturday; d.setDate(d.getDate() + 1)) {
       const dateStr = formatDate(d);
@@ -81,17 +78,40 @@ async function getWeeklyStats() {
         const snapshot = await response.json();
         
         snapshot.forEach(user => {
-          if (user.active) {
-            activeMembers.add(user.userId);
+          if (!userStats[user.userId]) {
+            userStats[user.userId] = {
+              active: user.active,
+              minWagered: user.wagered || 0,
+              maxWagered: user.wagered || 0,
+              minDeposited: user.deposited || 0,
+              maxDeposited: user.deposited || 0,
+              totalEarned: 0,
+            };
           }
           
-          // Track max values across the week
-          totalWagered = Math.max(totalWagered, user.wagered || 0);
-          totalDeposits = Math.max(totalDeposits, user.deposited || 0);
-          totalEarned += (user.earned || 0);
+          // Track min/max for each user
+          userStats[user.userId].minWagered = Math.min(userStats[user.userId].minWagered, user.wagered || 0);
+          userStats[user.userId].maxWagered = Math.max(userStats[user.userId].maxWagered, user.wagered || 0);
+          userStats[user.userId].minDeposited = Math.min(userStats[user.userId].minDeposited, user.deposited || 0);
+          userStats[user.userId].maxDeposited = Math.max(userStats[user.userId].maxDeposited, user.deposited || 0);
+          userStats[user.userId].totalEarned += (user.earned || 0);
+          userStats[user.userId].active = user.active; // Latest active status
         });
       }
     }
+    
+    // Calculate totals
+    let totalWagered = 0;
+    let totalDeposits = 0;
+    let totalEarned = 0;
+    let activeCount = 0;
+    
+    Object.values(userStats).forEach(user => {
+      totalWagered += (user.maxWagered - user.minWagered);
+      totalDeposits += (user.maxDeposited - user.minDeposited);
+      totalEarned += user.totalEarned;
+      if (user.active) activeCount++;
+    });
     
     return {
       weekStart: sundayStr,
@@ -99,7 +119,7 @@ async function getWeeklyStats() {
       totalWagered: totalWagered / 100, // Convert from pennies
       totalDeposits: totalDeposits / 100,
       affiliateIncome: totalEarned / 100,
-      activeMembers: activeMembers.size,
+      activeMembers: activeCount,
     };
   } catch (error) {
     console.error('Error getting weekly stats:', error);
