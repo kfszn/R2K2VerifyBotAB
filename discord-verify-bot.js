@@ -85,7 +85,8 @@ async function getWeeklyStats() {
               maxWagered: user.wagered || 0,
               minDeposited: user.deposited || 0,
               maxDeposited: user.deposited || 0,
-              totalEarned: 0,
+              minEarned: user.earned || 0,
+              maxEarned: user.earned || 0,
             };
           }
           
@@ -94,7 +95,8 @@ async function getWeeklyStats() {
           userStats[user.userId].maxWagered = Math.max(userStats[user.userId].maxWagered, user.wagered || 0);
           userStats[user.userId].minDeposited = Math.min(userStats[user.userId].minDeposited, user.deposited || 0);
           userStats[user.userId].maxDeposited = Math.max(userStats[user.userId].maxDeposited, user.deposited || 0);
-          userStats[user.userId].totalEarned += (user.earned || 0);
+          userStats[user.userId].minEarned = Math.min(userStats[user.userId].minEarned, user.earned || 0);
+          userStats[user.userId].maxEarned = Math.max(userStats[user.userId].maxEarned, user.earned || 0);
           userStats[user.userId].active = user.active; // Latest active status
         });
       }
@@ -109,7 +111,7 @@ async function getWeeklyStats() {
     Object.values(userStats).forEach(user => {
       totalWagered += (user.maxWagered - user.minWagered);
       totalDeposits += (user.maxDeposited - user.minDeposited);
-      totalEarned += user.totalEarned;
+      totalEarned += (user.maxEarned - user.minEarned);
       if (user.active) activeCount++;
     });
     
