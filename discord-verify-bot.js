@@ -2,7 +2,46 @@ const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require
 const fs = require('fs').promises;
 const path = require('path');
 const cron = require('node-cron');
+const { Pool } = require('pg');
 require('dotenv').config();
+
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+});
+
+// Initialize database tables
+async function initDatabase() {
+  try {
+    // Create rewards table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS rewards (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(255) NOT NULL,
+        reward_type VARCHAR(50) NOT NULL,
+        amount DECIMAL(10, 2) NOT NULL,
+        period INTEGER NOT NULL,
+        net_loss DECIMAL(10, 2),
+        claimed_by VARCHAR(255) NOT NULL,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Create links table for Discord-Acebet linking
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_links (
+        discord_id VARCHAR(255) PRIMARY KEY,
+        acebet_username VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    console.log('✅ Database tables initialized');
+  } catch (error) {
+    console.error('❌ Error initializing database:', error);
+  }
+}
 
 // Configuration
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -18,43 +57,96 @@ const LINKS_FILE = path.join(__dirname, 'acebet_links.json');
 // Rewards storage file
 const REWARDS_FILE = path.join(__dirname, 'acebet_rewards.json');
 
-// Load links from file
+// Load links from database
 async function loadLinks() {
   try {
-    const data = await fs.readFile(LINKS_FILE, 'utf8');
-    return JSON.parse(data);
+    const result = await pool.query('SELECT * FROM user_links');
+    const links = {};
+    result.rows.forEach(row => {
+      links[row.discord_id] = row.acebet_username;
+    });
+    return links;
   } catch (error) {
-    // If file doesn't exist, return empty object
+    console.error('Error loading links:', error);
     return {};
   }
 }
 
-// Save links to file
-async function saveLinks(links) {
+// Save link to database
+async function saveLink(discordId, acebetUsername) {
   try {
-    await fs.writeFile(LINKS_FILE, JSON.stringify(links, null, 2));
+    await pool.query(
+      `INSERT INTO user_links (discord_id, acebet_username)
+       VALUES ($1, $2)
+       ON CONFLICT (discord_id)
+       DO UPDATE SET acebet_username = $2`,
+      [discordId, acebetUsername]
+    );
   } catch (error) {
-    console.error('Error saving links:', error);
+    console.error('Error saving link:', error);
   }
 }
 
-// Load rewards from file
+// Delete link from database
+async function deleteLink(discordId) {
+  try {
+    await pool.query('DELETE FROM user_links WHERE discord_id = $1', [discordId]);
+  } catch (error) {
+    console.error('Error deleting link:', error);
+  }
+}
+
+// Load rewards from database
 async function loadRewards() {
   try {
-    const data = await fs.readFile(REWARDS_FILE, 'utf8');
-    return JSON.parse(data);
+    const result = await pool.query('SELECT * FROM rewards ORDER BY timestamp DESC');
+    return { rewards: result.rows };
   } catch (error) {
-    // If file doesn't exist, return empty array
+    console.error('Error loading rewards:', error);
     return { rewards: [] };
   }
 }
 
-// Save rewards to file
-async function saveRewards(rewardsData) {
+// Save reward to database
+async function saveReward(reward) {
   try {
-    await fs.writeFile(REWARDS_FILE, JSON.stringify(rewardsData, null, 2));
+    const query = `
+      INSERT INTO rewards (username, reward_type, amount, period, net_loss, claimed_by, timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `;
+    const values = [
+      reward.username,
+      reward.reward_type,
+      reward.amount,
+      reward.period,
+      reward.net_loss || null,
+      reward.claimed_by,
+      reward.timestamp || new Date().toISOString()
+    ];
+    const result = await pool.query(query, values);
+    return result.rows[0];
   } catch (error) {
-    console.error('Error saving rewards:', error);
+    console.error('Error saving reward:', error);
+    return null;
+  }
+}
+
+// Get rewards by filter
+async function getRewardsByFilter(username, rewardType, period) {
+  try {
+    const query = `
+      SELECT * FROM rewards
+      WHERE LOWER(username) = LOWER($1)
+        AND reward_type = $2
+        AND period = $3
+      ORDER BY timestamp ASC
+    `;
+    const result = await pool.query(query, [username, rewardType, period]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting rewards:', error);
+    return [];
   }
 }
 
@@ -328,6 +420,9 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('summary')
       .setDescription('Get weekly stats summary (Owner only)'),
+    new SlashCommandBuilder()
+      .setName('exportrewards')
+      .setDescription('Export rewards data as JSON file (Owner only)'),
     new SlashCommandBuilder()
       .setName('lossback')
       .setDescription('Calculate lossback owed for a user (Staff/Owner only)')
@@ -630,8 +725,7 @@ client.on('interactionCreate', async interaction => {
       }
 
       // Save the link
-      links[discordId] = user.name; // Use the exact username from API
-      await saveLinks(links);
+      await saveLink(discordId, user.name);
 
       await interaction.editReply(`✅ Successfully linked your Discord account to Acebet username **${user.name}**`);
     } catch (error) {
@@ -656,12 +750,8 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      // Load existing links
-      const links = await loadLinks();
-
       // Save the link
-      links[targetUser.id] = user.name;
-      await saveLinks(links);
+      await saveLink(targetUser.id, user.name);
 
       await interaction.editReply(`✅ Successfully linked <@${targetUser.id}> to Acebet username **${user.name}**`);
     } catch (error) {
@@ -684,8 +774,7 @@ client.on('interactionCreate', async interaction => {
       }
 
       const oldUsername = links[discordId];
-      delete links[discordId];
-      await saveLinks(links);
+      await deleteLink(discordId);
 
       await interaction.editReply(`✅ Successfully unlinked your account from **${oldUsername}**`);
     } catch (error) {
@@ -708,8 +797,7 @@ client.on('interactionCreate', async interaction => {
       }
 
       const oldUsername = links[targetUser.id];
-      delete links[targetUser.id];
-      await saveLinks(links);
+      await deleteLink(targetUser.id);
 
       await interaction.editReply(`✅ Successfully unlinked <@${targetUser.id}> from **${oldUsername}**`);
     } catch (error) {
@@ -770,6 +858,36 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
     }
   }
 
+  if (interaction.commandName === 'exportrewards') {
+    // Owner-only command
+    if (interaction.user.id !== OWNER_DISCORD_ID) {
+      await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const rewardsData = await loadRewards();
+      const jsonString = JSON.stringify(rewardsData, null, 2);
+      
+      // Create a buffer from the JSON string
+      const buffer = Buffer.from(jsonString, 'utf-8');
+      
+      // Send as file attachment
+      const { AttachmentBuilder } = require('discord.js');
+      const attachment = new AttachmentBuilder(buffer, { name: 'acebet_rewards.json' });
+      
+      await interaction.editReply({ 
+        content: `📊 Rewards data exported (${rewardsData.rewards.length} total claims)`,
+        files: [attachment]
+      });
+    } catch (error) {
+      console.error('Error in exportrewards command:', error);
+      await interaction.editReply('❌ An error occurred while exporting rewards data.');
+    }
+  }
+
   if (interaction.commandName === 'lossback') {
     const username = interaction.options.getString('username');
     const pnl = interaction.options.getNumber('pnl');
@@ -813,12 +931,7 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
       const finalPayout = Math.min(lossbackOwed, maxPayout);
 
       // Get previous claims for this user in this period
-      const rewardsData = await loadRewards();
-      const userLossbackClaims = rewardsData.rewards.filter(r => 
-        r.username.toLowerCase() === username.toLowerCase() && 
-        r.reward_type === 'lossback' && 
-        r.period === period
-      );
+      const userLossbackClaims = await getRewardsByFilter(username, 'lossback', period);
 
       // Check eligibility based on previous claims
       let eligibilityStatus = '✅ ELIGIBLE';
@@ -892,30 +1005,19 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
     await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
 
     try {
-      // Load rewards data
-      const rewardsData = await loadRewards();
-
       // Create new reward entry
       const newReward = {
-        id: rewardsData.rewards.length + 1,
         username: username,
         reward_type: rewardType,
         amount: amount,
         period: period,
         claimed_by: interaction.user.id,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        net_loss: (rewardType === 'lossback' && netLoss !== null) ? netLoss : null
       };
 
-      // Store net_loss for lossback claims (for eligibility tracking)
-      if (rewardType === 'lossback' && netLoss !== null) {
-        newReward.net_loss = netLoss;
-      }
-
-      // Add to rewards array
-      rewardsData.rewards.push(newReward);
-
-      // Save to file
-      await saveRewards(rewardsData);
+      // Save to database
+      await saveReward(newReward);
 
       // Format reward type name
       const rewardTypeNames = {
@@ -944,15 +1046,8 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
     await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
 
     try {
-      // Load rewards data
-      const rewardsData = await loadRewards();
-
-      // Filter claims for this user, reward type, and period
-      const claims = rewardsData.rewards.filter(r => 
-        r.username.toLowerCase() === username.toLowerCase() && 
-        r.reward_type === rewardType && 
-        r.period === period
-      );
+      // Get claims for this user, reward type, and period
+      const claims = await getRewardsByFilter(username, rewardType, period);
 
       if (claims.length === 0) {
         await interaction.editReply(`📊 No ${rewardType} claims found for **${username}** in Period ${period}`);
@@ -960,7 +1055,7 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
       }
 
       // Calculate total
-      const total = claims.reduce((sum, claim) => sum + claim.amount, 0);
+      const total = claims.reduce((sum, claim) => sum + parseFloat(claim.amount), 0);
 
       // Format reward type name
       const rewardTypeNames = {
@@ -981,7 +1076,7 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
           minute: '2-digit',
           hour12: true
         });
-        return `**Claim #${index + 1}:** $${claim.amount.toFixed(2)} on ${formattedDate}`;
+        return `**Claim #${index + 1}:** $${parseFloat(claim.amount).toFixed(2)} on ${formattedDate}`;
       }).join('\n');
 
       const message = `
@@ -1002,9 +1097,12 @@ ${claimsList}
 });
 
 // Bot ready event
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`Bot is ready to verify users under code R2K2`);
+  
+  // Initialize database
+  await initDatabase();
   
   // Schedule weekly summary every Sunday at 10:00 AM EST
   // Cron format: minute hour day month dayOfWeek
