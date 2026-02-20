@@ -777,7 +777,7 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
     const wagerAmount = interaction.options.getNumber('wager_amount');
     const period = interaction.options.getInteger('period');
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
 
     try {
       // Calculate net loss
@@ -889,7 +889,7 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
     const period = interaction.options.getInteger('period');
     const netLoss = interaction.options.getNumber('net_loss');
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
 
     try {
       // Load rewards data
@@ -941,7 +941,7 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
     const rewardType = interaction.options.getString('reward_type');
     const period = interaction.options.getInteger('period');
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
 
     try {
       // Load rewards data
