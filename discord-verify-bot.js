@@ -430,6 +430,9 @@ async function registerCommands() {
       .setName('exportrewards')
       .setDescription('Export rewards data as JSON file (Owner only)'),
     new SlashCommandBuilder()
+      .setName('setupdb')
+      .setDescription('Manually initialize database tables (Owner only)'),
+    new SlashCommandBuilder()
       .setName('lossback')
       .setDescription('Calculate lossback owed for a user (Staff/Owner only)')
       .addStringOption(option =>
@@ -894,6 +897,24 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
     }
   }
 
+  if (interaction.commandName === 'setupdb') {
+    // Owner-only command
+    if (interaction.user.id !== OWNER_DISCORD_ID) {
+      await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      await initDatabase();
+      await interaction.editReply('✅ Database tables created successfully!');
+    } catch (error) {
+      console.error('Error in setupdb command:', error);
+      await interaction.editReply('❌ An error occurred while setting up the database: ' + error.message);
+    }
+  }
+
   if (interaction.commandName === 'lossback') {
     const username = interaction.options.getString('username');
     const pnl = interaction.options.getNumber('pnl');
@@ -1080,9 +1101,10 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
           year: 'numeric',
           hour: 'numeric',
           minute: '2-digit',
-          hour12: true
+          hour12: true,
+          timeZone: 'America/New_York'
         });
-        return `**Claim #${index + 1}:** $${parseFloat(claim.amount).toFixed(2)} on ${formattedDate}`;
+        return `**Claim #${index + 1}:** $${parseFloat(claim.amount).toFixed(2)} on ${formattedDate} EST`;
       }).join('\n');
 
       const message = `
