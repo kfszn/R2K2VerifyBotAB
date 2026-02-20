@@ -433,6 +433,17 @@ async function registerCommands() {
       .setName('setupdb')
       .setDescription('Manually initialize database tables (Owner only)'),
     new SlashCommandBuilder()
+      .setName('periodstats')
+      .setDescription('View period statistics (Owner only)')
+      .addIntegerOption(option =>
+        option
+          .setName('period')
+          .setDescription('Period number (1-12)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(12)
+      ),
+    new SlashCommandBuilder()
       .setName('lossback')
       .setDescription('Calculate lossback owed for a user (Staff/Owner only)')
       .addStringOption(option =>
@@ -912,6 +923,105 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
     } catch (error) {
       console.error('Error in setupdb command:', error);
       await interaction.editReply('❌ An error occurred while setting up the database: ' + error.message);
+    }
+  }
+
+  if (interaction.commandName === 'periodstats') {
+    // Owner-only command
+    if (interaction.user.id !== OWNER_DISCORD_ID) {
+      await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
+      return;
+    }
+
+    const period = interaction.options.getInteger('period');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      // Get all claims for this period
+      const query = `
+        SELECT * FROM rewards
+        WHERE period = $1
+        ORDER BY timestamp DESC
+      `;
+      const result = await pool.query(query, [period]);
+      const claims = result.rows;
+
+      if (claims.length === 0) {
+        await interaction.editReply(`📊 No claims found for Period ${period}`);
+        return;
+      }
+
+      // Calculate stats
+      const userClaimCounts = {};
+      const userClaimTotals = {};
+      const rewardTypeTotals = {};
+
+      claims.forEach(claim => {
+        const username = claim.username;
+        const rewardType = claim.reward_type;
+        const amount = parseFloat(claim.amount);
+
+        // Count claims per user
+        userClaimCounts[username] = (userClaimCounts[username] || 0) + 1;
+
+        // Total $ claimed per user
+        userClaimTotals[username] = (userClaimTotals[username] || 0) + amount;
+
+        // Total $ per reward type
+        rewardTypeTotals[rewardType] = (rewardTypeTotals[rewardType] || 0) + amount;
+      });
+
+      // Find user with most claims
+      const mostClaimsUser = Object.entries(userClaimCounts)
+        .sort((a, b) => b[1] - a[1])[0];
+
+      // Find user with most $ claimed
+      const mostClaimedUser = Object.entries(userClaimTotals)
+        .sort((a, b) => b[1] - a[1])[0];
+
+      // Find most claimed category
+      const mostClaimedCategory = Object.entries(rewardTypeTotals)
+        .sort((a, b) => b[1] - a[1])[0];
+
+      // Format reward type names
+      const rewardTypeNames = {
+        'lossback': 'Lossback',
+        'wagerbonus': 'Wager Bonus',
+        'depobonus': 'Deposit Bonus',
+        'gw': 'Giveaway'
+      };
+
+      // Build totals per reward type message
+      const rewardTypeBreakdown = Object.entries(rewardTypeTotals)
+        .map(([type, total]) => `• ${rewardTypeNames[type]}: $${total.toFixed(2)}`)
+        .join('\n');
+
+      const message = `
+📊 **Period ${period} Statistics**
+
+👤 **Most Claims:**
+• **${mostClaimsUser[0]}** with ${mostClaimsUser[1]} claim${mostClaimsUser[1] > 1 ? 's' : ''}
+
+💰 **Most Claimed ($):**
+• **${mostClaimedUser[0]}** with $${mostClaimedUser[1].toFixed(2)}
+
+💵 **Total Paid Per Reward Type:**
+${rewardTypeBreakdown}
+
+🏆 **Most Claimed Category:**
+• **${rewardTypeNames[mostClaimedCategory[0]]}** ($${mostClaimedCategory[1].toFixed(2)})
+
+📈 **Overall:**
+• Total Claims: ${claims.length}
+• Total Paid: $${Object.values(rewardTypeTotals).reduce((a, b) => a + b, 0).toFixed(2)}
+• Unique Users: ${Object.keys(userClaimCounts).length}
+      `.trim();
+
+      await interaction.editReply(message);
+    } catch (error) {
+      console.error('Error in periodstats command:', error);
+      await interaction.editReply('❌ An error occurred while fetching period statistics.');
     }
   }
 
