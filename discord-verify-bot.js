@@ -110,6 +110,7 @@ async function loadRewards() {
 // Save reward to database
 async function saveReward(reward) {
   try {
+    console.log('Saving reward:', reward);
     const query = `
       INSERT INTO rewards (username, reward_type, amount, period, net_loss, claimed_by, timestamp)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -125,9 +126,11 @@ async function saveReward(reward) {
       reward.timestamp || new Date().toISOString()
     ];
     const result = await pool.query(query, values);
+    console.log('Saved reward successfully:', result.rows[0]);
     return result.rows[0];
   } catch (error) {
     console.error('Error saving reward:', error);
+    console.error('Attempted to save:', reward);
     return null;
   }
 }
@@ -142,10 +145,13 @@ async function getRewardsByFilter(username, rewardType, period) {
         AND period = $3
       ORDER BY timestamp ASC
     `;
+    console.log('Querying rewards with:', { username, rewardType, period });
     const result = await pool.query(query, [username, rewardType, period]);
+    console.log('Found', result.rows.length, 'rewards');
     return result.rows;
   } catch (error) {
     console.error('Error getting rewards:', error);
+    console.error('Query params:', { username, rewardType, period });
     return [];
   }
 }
