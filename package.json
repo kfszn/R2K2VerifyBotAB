@@ -1,21 +1,21 @@
 {
-  "name": "r2k2-verify-bot",
-  "version": "1.0.0",
-  "description": "Discord bot to verify Acebet users under code R2K2",
+  "name": "r2k2-discord-bot",
+  "version": "2.0.0",
+  "description": "R2K2 Discord bot for Acebet affiliate tracking and rewards management",
   "main": "discord-verify-bot.js",
   "scripts": {
-    "start": "node discord-verify-bot.js",
-    "dev": "nodemon discord-verify-bot.js"
+    "start": "node discord-verify-bot.js"
   },
-  "keywords": ["discord", "bot", "acebet", "verification"],
+  "keywords": ["discord", "bot", "acebet", "affiliate"],
   "author": "R2K2",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "discord.js": "^14.14.1",
     "dotenv": "^16.3.1",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "pg": "^8.11.3"
   },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
