@@ -15,6 +15,9 @@ const OWNER_DISCORD_ID = '687823175647887394'; // Your Discord ID
 // Links storage file
 const LINKS_FILE = path.join(__dirname, 'acebet_links.json');
 
+// Rewards storage file
+const REWARDS_FILE = path.join(__dirname, 'acebet_rewards.json');
+
 // Load links from file
 async function loadLinks() {
   try {
@@ -32,6 +35,26 @@ async function saveLinks(links) {
     await fs.writeFile(LINKS_FILE, JSON.stringify(links, null, 2));
   } catch (error) {
     console.error('Error saving links:', error);
+  }
+}
+
+// Load rewards from file
+async function loadRewards() {
+  try {
+    const data = await fs.readFile(REWARDS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    // If file doesn't exist, return empty array
+    return { rewards: [] };
+  }
+}
+
+// Save rewards to file
+async function saveRewards(rewardsData) {
+  try {
+    await fs.writeFile(REWARDS_FILE, JSON.stringify(rewardsData, null, 2));
+  } catch (error) {
+    console.error('Error saving rewards:', error);
   }
 }
 
@@ -305,6 +328,111 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('summary')
       .setDescription('Get weekly stats summary (Owner only)'),
+    new SlashCommandBuilder()
+      .setName('lossback')
+      .setDescription('Calculate lossback owed for a user (Staff/Owner only)')
+      .addStringOption(option =>
+        option
+          .setName('username')
+          .setDescription('Acebet username')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('pnl')
+          .setDescription('P&L amount (use negative for loss, e.g., -500)')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('rewards_claimed')
+          .setDescription('Total rewards this period (excluding leaderboard payments)')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('wager_amount')
+          .setDescription('Total wager for this period')
+          .setRequired(true)
+      )
+      .addIntegerOption(option =>
+        option
+          .setName('period')
+          .setDescription('Period number (1-12)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(12)
+      ),
+    new SlashCommandBuilder()
+      .setName('claim')
+      .setDescription('Record a reward payment (Owner only)')
+      .addStringOption(option =>
+        option
+          .setName('username')
+          .setDescription('Acebet username')
+          .setRequired(true)
+      )
+      .addStringOption(option =>
+        option
+          .setName('reward_type')
+          .setDescription('Type of reward')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Lossback', value: 'lossback' },
+            { name: 'Wager Bonus', value: 'wagerbonus' },
+            { name: 'Deposit Bonus', value: 'depobonus' },
+            { name: 'Giveaway', value: 'gw' }
+          )
+      )
+      .addNumberOption(option =>
+        option
+          .setName('amount')
+          .setDescription('Amount being paid')
+          .setRequired(true)
+      )
+      .addIntegerOption(option =>
+        option
+          .setName('period')
+          .setDescription('Period number (1-12)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(12)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('net_loss')
+          .setDescription('Net loss value (for lossback only - get from /lossback command)')
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('claimed')
+      .setDescription('View claim history for a user (Staff/Owner only)')
+      .addStringOption(option =>
+        option
+          .setName('username')
+          .setDescription('Acebet username')
+          .setRequired(true)
+      )
+      .addStringOption(option =>
+        option
+          .setName('reward_type')
+          .setDescription('Type of reward')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Lossback', value: 'lossback' },
+            { name: 'Wager Bonus', value: 'wagerbonus' },
+            { name: 'Deposit Bonus', value: 'depobonus' },
+            { name: 'Giveaway', value: 'gw' }
+          )
+      )
+      .addIntegerOption(option =>
+        option
+          .setName('period')
+          .setDescription('Period number (1-12)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(12)
+      ),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
@@ -337,7 +465,7 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   // Commands that require staff/owner role
-  const staffOnlyCommands = ['acebet', 'wager', 'linkuser', 'unlinkuser', 'checklink'];
+  const staffOnlyCommands = ['acebet', 'wager', 'linkuser', 'unlinkuser', 'checklink', 'lossback', 'claimed'];
   
   if (staffOnlyCommands.includes(interaction.commandName)) {
     // Check if user has staff or owner role
@@ -639,6 +767,236 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
     } catch (error) {
       console.error('Error in summary command:', error);
       await interaction.editReply('❌ An error occurred while generating the summary.');
+    }
+  }
+
+  if (interaction.commandName === 'lossback') {
+    const username = interaction.options.getString('username');
+    const pnl = interaction.options.getNumber('pnl');
+    const rewardsClaimed = interaction.options.getNumber('rewards_claimed');
+    const wagerAmount = interaction.options.getNumber('wager_amount');
+    const period = interaction.options.getInteger('period');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      // Calculate net loss
+      const netLoss = pnl + rewardsClaimed;
+
+      // Check if eligible (must be in loss)
+      if (netLoss >= 0) {
+        await interaction.editReply(`❌ **${username}** is in profit. Cannot claim lossback when in profit.\n\nNet P&L: $${netLoss.toFixed(2)}`);
+        return;
+      }
+
+      // Determine tier and percentage
+      let tierName = '';
+      let percentage = 0;
+      let maxPayout = 0;
+
+      if (wagerAmount >= 0 && wagerAmount <= 99999) {
+        tierName = 'Tier 1';
+        percentage = 5;
+        maxPayout = 100;
+      } else if (wagerAmount >= 100000 && wagerAmount <= 499999) {
+        tierName = 'Tier 2';
+        percentage = 10;
+        maxPayout = 200;
+      } else if (wagerAmount >= 500000) {
+        tierName = 'Tier 3';
+        percentage = 15;
+        maxPayout = 300;
+      }
+
+      // Calculate lossback
+      const lossbackOwed = Math.abs(netLoss) * (percentage / 100);
+      const finalPayout = Math.min(lossbackOwed, maxPayout);
+
+      // Get previous claims for this user in this period
+      const rewardsData = await loadRewards();
+      const userLossbackClaims = rewardsData.rewards.filter(r => 
+        r.username.toLowerCase() === username.toLowerCase() && 
+        r.reward_type === 'lossback' && 
+        r.period === period
+      );
+
+      // Check eligibility based on previous claims
+      let eligibilityStatus = '✅ ELIGIBLE';
+      let eligibilityNote = '';
+
+      if (userLossbackClaims.length === 0) {
+        // First claim - must be at least -$300 net loss
+        if (netLoss > -300) {
+          eligibilityStatus = '❌ INELIGIBLE';
+          eligibilityNote = `\n\n**Not eligible yet.** Need $${(300 - Math.abs(netLoss)).toFixed(2)} more net loss to claim.\n(Minimum -$300 net loss required for first claim)`;
+        }
+      } else {
+        // Subsequent claims - must be -$300 MORE net loss than last claim
+        const lastClaim = userLossbackClaims[userLossbackClaims.length - 1];
+        const lastClaimNetLoss = lastClaim.net_loss || 0;
+        const requiredNetLoss = lastClaimNetLoss - 300;
+
+        if (netLoss > requiredNetLoss) {
+          eligibilityStatus = '❌ INELIGIBLE';
+          const neededLoss = Math.abs(requiredNetLoss - netLoss);
+          eligibilityNote = `\n\n**Not eligible yet.** Need $${neededLoss.toFixed(2)} more net loss to claim again.\n(Last claim was at $${lastClaimNetLoss.toFixed(2)} net loss. Need to reach $${requiredNetLoss.toFixed(2)})`;
+        }
+      }
+
+      // Build response message
+      const claimsHistory = userLossbackClaims.length > 0 
+        ? `\n\n**Previous Claims in Period ${period}:**\n${userLossbackClaims.map((c, i) => `Claim #${i + 1}: $${c.amount.toFixed(2)} (Net Loss: $${c.net_loss.toFixed(2)})`).join('\n')}`
+        : '';
+
+      const message = `
+**Lossback Calculation - Period ${period}**
+Username: **${username}**
+
+📊 **Calculation:**
+• P&L: $${pnl.toFixed(2)}
+• Rewards Claimed: $${rewardsClaimed.toFixed(2)}
+• **Net Loss: $${netLoss.toFixed(2)}**
+
+💰 **Wager Tier:**
+• Total Wager: $${wagerAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+• ${tierName} (${percentage}%, max $${maxPayout})
+
+🎯 **Lossback Calculation:**
+• $${Math.abs(netLoss).toFixed(2)} × ${percentage}% = $${lossbackOwed.toFixed(2)}
+• Capped at $${maxPayout} max
+• **Lossback Owed: $${finalPayout.toFixed(2)}**
+
+${eligibilityStatus}${eligibilityNote}${claimsHistory}
+      `.trim();
+
+      await interaction.editReply(message);
+    } catch (error) {
+      console.error('Error in lossback command:', error);
+      await interaction.editReply('❌ An error occurred while calculating lossback.');
+    }
+  }
+
+  if (interaction.commandName === 'claim') {
+    // Owner-only command
+    if (interaction.user.id !== OWNER_DISCORD_ID) {
+      await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
+      return;
+    }
+
+    const username = interaction.options.getString('username');
+    const rewardType = interaction.options.getString('reward_type');
+    const amount = interaction.options.getNumber('amount');
+    const period = interaction.options.getInteger('period');
+    const netLoss = interaction.options.getNumber('net_loss');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      // Load rewards data
+      const rewardsData = await loadRewards();
+
+      // Create new reward entry
+      const newReward = {
+        id: rewardsData.rewards.length + 1,
+        username: username,
+        reward_type: rewardType,
+        amount: amount,
+        period: period,
+        claimed_by: interaction.user.id,
+        timestamp: new Date().toISOString()
+      };
+
+      // Store net_loss for lossback claims (for eligibility tracking)
+      if (rewardType === 'lossback' && netLoss !== null) {
+        newReward.net_loss = netLoss;
+      }
+
+      // Add to rewards array
+      rewardsData.rewards.push(newReward);
+
+      // Save to file
+      await saveRewards(rewardsData);
+
+      // Format reward type name
+      const rewardTypeNames = {
+        'lossback': 'Lossback',
+        'wagerbonus': 'Wager Bonus',
+        'depobonus': 'Deposit Bonus',
+        'gw': 'Giveaway'
+      };
+
+      const netLossNote = (rewardType === 'lossback' && netLoss !== null) 
+        ? `\n(Net Loss: $${netLoss.toFixed(2)})` 
+        : '';
+
+      await interaction.editReply(`✅ Successfully recorded **$${amount.toFixed(2)} ${rewardTypeNames[rewardType]}** for **${username}** in Period ${period}${netLossNote}`);
+    } catch (error) {
+      console.error('Error in claim command:', error);
+      await interaction.editReply('❌ An error occurred while recording the claim.');
+    }
+  }
+
+  if (interaction.commandName === 'claimed') {
+    const username = interaction.options.getString('username');
+    const rewardType = interaction.options.getString('reward_type');
+    const period = interaction.options.getInteger('period');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      // Load rewards data
+      const rewardsData = await loadRewards();
+
+      // Filter claims for this user, reward type, and period
+      const claims = rewardsData.rewards.filter(r => 
+        r.username.toLowerCase() === username.toLowerCase() && 
+        r.reward_type === rewardType && 
+        r.period === period
+      );
+
+      if (claims.length === 0) {
+        await interaction.editReply(`📊 No ${rewardType} claims found for **${username}** in Period ${period}`);
+        return;
+      }
+
+      // Calculate total
+      const total = claims.reduce((sum, claim) => sum + claim.amount, 0);
+
+      // Format reward type name
+      const rewardTypeNames = {
+        'lossback': 'Lossback',
+        'wagerbonus': 'Wager Bonus',
+        'depobonus': 'Deposit Bonus',
+        'gw': 'Giveaway'
+      };
+
+      // Build claims list
+      const claimsList = claims.map((claim, index) => {
+        const date = new Date(claim.timestamp);
+        const formattedDate = date.toLocaleString('en-US', { 
+          month: 'short', 
+          day: 'numeric', 
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
+        return `**Claim #${index + 1}:** $${claim.amount.toFixed(2)} on ${formattedDate}`;
+      }).join('\n');
+
+      const message = `
+📊 **${rewardTypeNames[rewardType]} Claims - Period ${period}**
+Username: **${username}**
+
+${claimsList}
+
+💰 **Total Claimed This Period:** $${total.toFixed(2)}
+      `.trim();
+
+      await interaction.editReply(message);
+    } catch (error) {
+      console.error('Error in claimed command:', error);
+      await interaction.editReply('❌ An error occurred while fetching claim history.');
     }
   }
 });
