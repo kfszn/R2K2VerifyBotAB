@@ -24,8 +24,14 @@ async function initDatabase() {
         period INTEGER NOT NULL,
         net_loss DECIMAL(10, 2),
         claimed_by VARCHAR(255) NOT NULL,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        site VARCHAR(50) DEFAULT 'acebet'
       )
+    `);
+
+    // Add site column if it doesn't exist (for existing databases)
+    await pool.query(`
+      ALTER TABLE rewards ADD COLUMN IF NOT EXISTS site VARCHAR(50) DEFAULT 'acebet'
     `);
     
     // Create links table for Discord-Acebet linking
@@ -48,8 +54,8 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const ACEBET_TOKEN = process.env.ACEBET_TOKEN;
-const WAGER_WINDOW_START = process.env.WAGER_WINDOW_START || '2025-01-01'; // Adjust as needed
-const OWNER_DISCORD_ID = '687823175647887394'; // Your Discord ID
+const WAGER_WINDOW_START = process.env.WAGER_WINDOW_START || '2025-01-01';
+const OWNER_DISCORD_ID = '687823175647887394';
 
 // Links storage file
 const LINKS_FILE = path.join(__dirname, 'acebet_links.json');
@@ -112,8 +118,8 @@ async function saveReward(reward) {
   try {
     console.log('Saving reward:', reward);
     const query = `
-      INSERT INTO rewards (username, reward_type, amount, period, net_loss, claimed_by, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO rewards (username, reward_type, amount, period, net_loss, claimed_by, timestamp, site)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `;
     const values = [
@@ -123,7 +129,8 @@ async function saveReward(reward) {
       reward.period,
       reward.net_loss || null,
       reward.claimed_by,
-      reward.timestamp || new Date().toISOString()
+      reward.timestamp || new Date().toISOString(),
+      reward.site || 'acebet'
     ];
     const result = await pool.query(query, values);
     console.log('Saved reward successfully:', result.rows[0]);
@@ -136,22 +143,38 @@ async function saveReward(reward) {
 }
 
 // Get rewards by filter
-async function getRewardsByFilter(username, rewardType, period) {
+async function getRewardsByFilter(username, rewardType, period, site = null) {
   try {
-    const query = `
-      SELECT * FROM rewards
-      WHERE LOWER(username) = LOWER($1)
-        AND reward_type = $2
-        AND period = $3
-      ORDER BY timestamp ASC
-    `;
-    console.log('Querying rewards with:', { username, rewardType, period });
-    const result = await pool.query(query, [username, rewardType, period]);
+    let query, params;
+
+    if (rewardType === 'all') {
+      query = `
+        SELECT * FROM rewards
+        WHERE LOWER(username) = LOWER($1)
+          AND period = $2
+          ${site ? 'AND site = $3' : ''}
+        ORDER BY timestamp ASC
+      `;
+      params = site ? [username, period, site] : [username, period];
+    } else {
+      query = `
+        SELECT * FROM rewards
+        WHERE LOWER(username) = LOWER($1)
+          AND reward_type = $2
+          AND period = $3
+          ${site ? 'AND site = $4' : ''}
+        ORDER BY timestamp ASC
+      `;
+      params = site ? [username, rewardType, period, site] : [username, rewardType, period];
+    }
+
+    console.log('Querying rewards with:', { username, rewardType, period, site });
+    const result = await pool.query(query, params);
     console.log('Found', result.rows.length, 'rewards');
     return result.rows;
   } catch (error) {
     console.error('Error getting rewards:', error);
-    console.error('Query params:', { username, rewardType, period });
+    console.error('Query params:', { username, rewardType, period, site });
     return [];
   }
 }
@@ -159,18 +182,14 @@ async function getRewardsByFilter(username, rewardType, period) {
 // Get weekly stats for Sunday report
 async function getWeeklyStats() {
   try {
-    // Get current date (should be Sunday when this runs)
     const today = new Date();
     
-    // Calculate last Sunday (start of previous week)
     const lastSunday = new Date(today);
     lastSunday.setDate(today.getDate() - 7);
     
-    // Calculate last Saturday (end of previous week)
     const lastSaturday = new Date(today);
     lastSaturday.setDate(today.getDate() - 1);
     
-    // Format dates
     const formatDate = (date) => {
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -181,7 +200,6 @@ async function getWeeklyStats() {
     const sundayStr = formatDate(lastSunday);
     const saturdayStr = formatDate(lastSaturday);
     
-    // Track min/max wagered per user
     const userStats = {};
     
     for (let d = new Date(lastSunday); d <= lastSaturday; d.setDate(d.getDate() + 1)) {
@@ -211,19 +229,17 @@ async function getWeeklyStats() {
             };
           }
           
-          // Track min/max for each user
           userStats[user.userId].minWagered = Math.min(userStats[user.userId].minWagered, user.wagered || 0);
           userStats[user.userId].maxWagered = Math.max(userStats[user.userId].maxWagered, user.wagered || 0);
           userStats[user.userId].minDeposited = Math.min(userStats[user.userId].minDeposited, user.deposited || 0);
           userStats[user.userId].maxDeposited = Math.max(userStats[user.userId].maxDeposited, user.deposited || 0);
           userStats[user.userId].minEarned = Math.min(userStats[user.userId].minEarned, user.earned || 0);
           userStats[user.userId].maxEarned = Math.max(userStats[user.userId].maxEarned, user.earned || 0);
-          userStats[user.userId].active = user.active; // Latest active status
+          userStats[user.userId].active = user.active;
         });
       }
     }
     
-    // Calculate totals
     let totalWagered = 0;
     let totalDeposits = 0;
     let totalEarned = 0;
@@ -239,7 +255,7 @@ async function getWeeklyStats() {
     return {
       weekStart: sundayStr,
       weekEnd: saturdayStr,
-      totalWagered: totalWagered / 100, // Convert from pennies
+      totalWagered: totalWagered / 100,
       totalDeposits: totalDeposits / 100,
       affiliateIncome: totalEarned / 100,
       activeMembers: activeCount,
@@ -276,21 +292,18 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
 
 // Resolve Discord user mention or Acebet username
 async function resolveToAcebetUsername(input) {
-  // Check if input is a Discord user mention format: <@USER_ID> or <@!USER_ID>
   const mentionMatch = input.match(/^<@!?(\d+)>$/);
   
   if (mentionMatch) {
-    // It's a Discord mention - look up their linked Acebet username
     const userId = mentionMatch[1];
     const links = await loadLinks();
     
     if (links[userId]) {
       return links[userId];
     }
-    return null; // User not linked
+    return null;
   }
   
-  // Not a mention, treat as direct Acebet username
   return input;
 }
 
@@ -329,7 +342,6 @@ async function checkUserActive(username) {
   try {
     const users = await getAcebetUsers();
     
-    // Find user by name (case-insensitive)
     const user = users.find(u => u.name.toLowerCase() === username.toLowerCase());
     
     if (!user) {
@@ -499,6 +511,16 @@ async function registerCommands() {
             { name: 'Giveaway', value: 'gw' }
           )
       )
+      .addStringOption(option =>
+        option
+          .setName('site')
+          .setDescription('Which site')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Acebet', value: 'acebet' },
+            { name: 'Packdraw', value: 'packdraw' }
+          )
+      )
       .addNumberOption(option =>
         option
           .setName('amount')
@@ -531,13 +553,14 @@ async function registerCommands() {
       .addStringOption(option =>
         option
           .setName('reward_type')
-          .setDescription('Type of reward')
+          .setDescription('Type of reward (All shows both sites)')
           .setRequired(true)
           .addChoices(
             { name: 'Lossback', value: 'lossback' },
             { name: 'Wager Bonus', value: 'wagerbonus' },
             { name: 'Deposit Bonus', value: 'depobonus' },
-            { name: 'Giveaway', value: 'gw' }
+            { name: 'Giveaway', value: 'gw' },
+            { name: 'All', value: 'all' }
           )
       )
       .addIntegerOption(option =>
@@ -547,6 +570,16 @@ async function registerCommands() {
           .setRequired(true)
           .setMinValue(1)
           .setMaxValue(12)
+      )
+      .addStringOption(option =>
+        option
+          .setName('site')
+          .setDescription('Which site (not required when reward_type is All)')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Acebet', value: 'acebet' },
+            { name: 'Packdraw', value: 'packdraw' }
+          )
       ),
   ].map(command => command.toJSON());
 
@@ -555,7 +588,6 @@ async function registerCommands() {
   try {
     console.log('Started refreshing application (/) commands.');
 
-    // Clear existing guild commands first to prevent duplicates
     await rest.put(
       Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
       { body: [] },
@@ -563,7 +595,6 @@ async function registerCommands() {
 
     console.log('Cleared existing commands.');
 
-    // Register new commands
     await rest.put(
       Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
       { body: commands },
@@ -579,12 +610,10 @@ async function registerCommands() {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  // Commands that require staff/owner role
   const staffOnlyCommands = ['acebet', 'wager', 'linkuser', 'unlinkuser', 'checklink', 'lossback', 'claimed'];
   
   if (staffOnlyCommands.includes(interaction.commandName)) {
-    // Check if user has staff or owner role
-    const allowedRoles = ['staff', 'owner']; // Change these to your exact role names (case-sensitive)
+    const allowedRoles = ['staff', 'owner'];
     const hasPermission = interaction.member.roles.cache.some(role => 
       allowedRoles.some(allowedRole => role.name.toLowerCase() === allowedRole.toLowerCase())
     );
@@ -598,7 +627,6 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName === 'acebet') {
     const username = interaction.options.getString('username');
 
-    // Defer reply since API call might take a moment
     await interaction.deferReply();
 
     try {
@@ -633,19 +661,14 @@ client.on('interactionCreate', async interaction => {
     await interaction.deferReply();
 
     try {
-      // Calculate date range based on period
-      // Period 1 starts on Dec 26, 2025
       const periodStartBase = new Date('2025-12-26');
       
-      // Calculate start date for current period: base + (period - 1) * 30 days
       const startDate = new Date(periodStartBase);
       startDate.setDate(startDate.getDate() + ((period - 1) * 30));
       
-      // Calculate end date: start + 29 days (30 day period inclusive)
       const endDate = new Date(startDate);
       endDate.setDate(endDate.getDate() + 29);
       
-      // Format dates as YYYY-MM-DD
       const formatDate = (date) => {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -656,13 +679,11 @@ client.on('interactionCreate', async interaction => {
       const startDateStr = formatDate(startDate);
       const endDateStr = formatDate(endDate);
 
-      // Aggregate snapshots across date range
       let userFound = false;
       let maxWagered = 0;
       let minWagered = Infinity;
       let userName = username;
 
-      // Loop through each day in the period
       for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
         const dateStr = formatDate(d);
         
@@ -680,9 +701,8 @@ client.on('interactionCreate', async interaction => {
           
           if (user) {
             userFound = true;
-            userName = user.name; // Use exact capitalization from API
+            userName = user.name;
             
-            // Track min/max wagered for this user
             if (user.wagered > maxWagered) {
               maxWagered = user.wagered;
             }
@@ -698,11 +718,8 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      // Calculate period wager as difference between max and min cumulative wager
-      // This represents the actual wager activity during this period
       const periodWager = maxWagered - (minWagered === Infinity ? 0 : minWagered);
 
-      // Format the wager amount with commas (divide by 100 since API returns pennies)
       const wagerInDollars = periodWager / 100;
       const formattedWager = wagerInDollars.toLocaleString('en-US', {
         minimumFractionDigits: 2,
@@ -726,7 +743,6 @@ client.on('interactionCreate', async interaction => {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      // Verify the Acebet username exists in the API
       const users = await getAcebetUsers();
       const user = users.find(u => u.name.toLowerCase() === acebetUsername.toLowerCase());
 
@@ -735,16 +751,13 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      // Load existing links
       const links = await loadLinks();
 
-      // Check if user is already linked
       if (links[discordId]) {
         await interaction.editReply(`❌ You are already linked to **${links[discordId]}**. Use \`/unlink\` first to change your linked account.`);
         return;
       }
 
-      // Save the link
       await saveLink(discordId, user.name);
 
       await interaction.editReply(`✅ Successfully linked your Discord account to Acebet username **${user.name}**`);
@@ -761,7 +774,6 @@ client.on('interactionCreate', async interaction => {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      // Verify the Acebet username exists in the API
       const users = await getAcebetUsers();
       const user = users.find(u => u.name.toLowerCase() === acebetUsername.toLowerCase());
 
@@ -770,7 +782,6 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      // Save the link
       await saveLink(targetUser.id, user.name);
 
       await interaction.editReply(`✅ Successfully linked <@${targetUser.id}> to Acebet username **${user.name}**`);
@@ -847,7 +858,6 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (interaction.commandName === 'summary') {
-    // Owner-only command
     if (interaction.user.id !== OWNER_DISCORD_ID) {
       await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
       return;
@@ -869,8 +879,6 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
       `.trim();
       
       await interaction.editReply(message);
-      
-      // Also send DM
       await interaction.user.send(message);
     } catch (error) {
       console.error('Error in summary command:', error);
@@ -879,7 +887,6 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
   }
 
   if (interaction.commandName === 'exportrewards') {
-    // Owner-only command
     if (interaction.user.id !== OWNER_DISCORD_ID) {
       await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
       return;
@@ -891,10 +898,8 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
       const rewardsData = await loadRewards();
       const jsonString = JSON.stringify(rewardsData, null, 2);
       
-      // Create a buffer from the JSON string
       const buffer = Buffer.from(jsonString, 'utf-8');
       
-      // Send as file attachment
       const { AttachmentBuilder } = require('discord.js');
       const attachment = new AttachmentBuilder(buffer, { name: 'acebet_rewards.json' });
       
@@ -909,7 +914,6 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
   }
 
   if (interaction.commandName === 'setupdb') {
-    // Owner-only command
     if (interaction.user.id !== OWNER_DISCORD_ID) {
       await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
       return;
@@ -927,7 +931,6 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
   }
 
   if (interaction.commandName === 'periodstats') {
-    // Owner-only command
     if (interaction.user.id !== OWNER_DISCORD_ID) {
       await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
       return;
@@ -938,7 +941,6 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      // Get all claims for this period
       const query = `
         SELECT * FROM rewards
         WHERE period = $1
@@ -952,7 +954,6 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
         return;
       }
 
-      // Calculate stats
       const userClaimCounts = {};
       const userClaimTotals = {};
       const rewardTypeTotals = {};
@@ -962,29 +963,20 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
         const rewardType = claim.reward_type;
         const amount = parseFloat(claim.amount);
 
-        // Count claims per user
         userClaimCounts[username] = (userClaimCounts[username] || 0) + 1;
-
-        // Total $ claimed per user
         userClaimTotals[username] = (userClaimTotals[username] || 0) + amount;
-
-        // Total $ per reward type
         rewardTypeTotals[rewardType] = (rewardTypeTotals[rewardType] || 0) + amount;
       });
 
-      // Find user with most claims
       const mostClaimsUser = Object.entries(userClaimCounts)
         .sort((a, b) => b[1] - a[1])[0];
 
-      // Find user with most $ claimed
       const mostClaimedUser = Object.entries(userClaimTotals)
         .sort((a, b) => b[1] - a[1])[0];
 
-      // Find most claimed category
       const mostClaimedCategory = Object.entries(rewardTypeTotals)
         .sort((a, b) => b[1] - a[1])[0];
 
-      // Format reward type names
       const rewardTypeNames = {
         'lossback': 'Lossback',
         'wagerbonus': 'Wager Bonus',
@@ -992,9 +984,8 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
         'gw': 'Giveaway'
       };
 
-      // Build totals per reward type message
       const rewardTypeBreakdown = Object.entries(rewardTypeTotals)
-        .map(([type, total]) => `• ${rewardTypeNames[type]}: $${total.toFixed(2)}`)
+        .map(([type, total]) => `• ${rewardTypeNames[type] || type}: $${total.toFixed(2)}`)
         .join('\n');
 
       const message = `
@@ -1010,7 +1001,7 @@ Week: ${stats.weekStart} to ${stats.weekEnd}
 ${rewardTypeBreakdown}
 
 🏆 **Most Claimed Category:**
-• **${rewardTypeNames[mostClaimedCategory[0]]}** ($${mostClaimedCategory[1].toFixed(2)})
+• **${rewardTypeNames[mostClaimedCategory[0]] || mostClaimedCategory[0]}** ($${mostClaimedCategory[1].toFixed(2)})
 
 📈 **Overall:**
 • Total Claims: ${claims.length}
@@ -1032,19 +1023,16 @@ ${rewardTypeBreakdown}
     const wagerAmount = interaction.options.getNumber('wager_amount');
     const period = interaction.options.getInteger('period');
 
-    await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
+    await interaction.deferReply({ ephemeral: false });
 
     try {
-      // Calculate net loss
       const netLoss = pnl + rewardsClaimed;
 
-      // Check if eligible (must be in loss)
       if (netLoss >= 0) {
         await interaction.editReply(`❌ **${username}** is in profit. Cannot claim lossback when in profit.\n\nNet P&L: $${netLoss.toFixed(2)}`);
         return;
       }
 
-      // Determine tier and percentage
       let tierName = '';
       let percentage = 0;
       let maxPayout = 0;
@@ -1063,25 +1051,20 @@ ${rewardTypeBreakdown}
         maxPayout = 300;
       }
 
-      // Calculate lossback
       const lossbackOwed = Math.abs(netLoss) * (percentage / 100);
       const finalPayout = Math.min(lossbackOwed, maxPayout);
 
-      // Get previous claims for this user in this period
       const userLossbackClaims = await getRewardsByFilter(username, 'lossback', period);
 
-      // Check eligibility based on previous claims
       let eligibilityStatus = '✅ ELIGIBLE';
       let eligibilityNote = '';
 
       if (userLossbackClaims.length === 0) {
-        // First claim - must be at least -$300 net loss
         if (netLoss > -300) {
           eligibilityStatus = '❌ INELIGIBLE';
           eligibilityNote = `\n\n**Not eligible yet.** Need $${(300 - Math.abs(netLoss)).toFixed(2)} more net loss to claim.\n(Minimum -$300 net loss required for first claim)`;
         }
       } else {
-        // Subsequent claims - must be -$300 MORE net loss than last claim
         const lastClaim = userLossbackClaims[userLossbackClaims.length - 1];
         const lastClaimNetLoss = lastClaim.net_loss || 0;
         const requiredNetLoss = lastClaimNetLoss - 300;
@@ -1093,9 +1076,8 @@ ${rewardTypeBreakdown}
         }
       }
 
-      // Build response message
       const claimsHistory = userLossbackClaims.length > 0 
-        ? `\n\n**Previous Claims in Period ${period}:**\n${userLossbackClaims.map((c, i) => `Claim #${i + 1}: $${c.amount.toFixed(2)} (Net Loss: $${c.net_loss.toFixed(2)})`).join('\n')}`
+        ? `\n\n**Previous Claims in Period ${period}:**\n${userLossbackClaims.map((c, i) => `Claim #${i + 1}: $${parseFloat(c.amount).toFixed(2)} (Net Loss: $${parseFloat(c.net_loss).toFixed(2)})`).join('\n')}`
         : '';
 
       const message = `
@@ -1127,7 +1109,6 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
   }
 
   if (interaction.commandName === 'claim') {
-    // Owner-only command
     if (interaction.user.id !== OWNER_DISCORD_ID) {
       await interaction.reply({ content: '❌ This command is owner-only.', ephemeral: true });
       return;
@@ -1135,14 +1116,14 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
 
     const username = interaction.options.getString('username');
     const rewardType = interaction.options.getString('reward_type');
+    const site = interaction.options.getString('site');
     const amount = interaction.options.getNumber('amount');
     const period = interaction.options.getInteger('period');
     const netLoss = interaction.options.getNumber('net_loss');
 
-    await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
+    await interaction.deferReply({ ephemeral: false });
 
     try {
-      // Create new reward entry
       const newReward = {
         username: username,
         reward_type: rewardType,
@@ -1150,13 +1131,12 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
         period: period,
         claimed_by: interaction.user.id,
         timestamp: new Date().toISOString(),
-        net_loss: (rewardType === 'lossback' && netLoss !== null) ? netLoss : null
+        net_loss: (rewardType === 'lossback' && netLoss !== null) ? netLoss : null,
+        site: site
       };
 
-      // Save to database
       await saveReward(newReward);
 
-      // Format reward type name
       const rewardTypeNames = {
         'lossback': 'Lossback',
         'wagerbonus': 'Wager Bonus',
@@ -1164,11 +1144,12 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
         'gw': 'Giveaway'
       };
 
+      const siteLabel = site.charAt(0).toUpperCase() + site.slice(1);
       const netLossNote = (rewardType === 'lossback' && netLoss !== null) 
         ? `\n(Net Loss: $${netLoss.toFixed(2)})` 
         : '';
 
-      await interaction.editReply(`✅ Successfully recorded **$${amount.toFixed(2)} ${rewardTypeNames[rewardType]}** for **${username}** in Period ${period}${netLossNote}`);
+      await interaction.editReply(`✅ Successfully recorded **$${amount.toFixed(2)} ${rewardTypeNames[rewardType]}** for **${username}** on **${siteLabel}** in Period ${period}${netLossNote}`);
     } catch (error) {
       console.error('Error in claim command:', error);
       await interaction.editReply('❌ An error occurred while recording the claim.');
@@ -1179,22 +1160,11 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
     const username = interaction.options.getString('username');
     const rewardType = interaction.options.getString('reward_type');
     const period = interaction.options.getInteger('period');
+    const site = interaction.options.getString('site');
 
-    await interaction.deferReply({ ephemeral: false }); // Changed to false - visible to everyone
+    await interaction.deferReply({ ephemeral: false });
 
     try {
-      // Get claims for this user, reward type, and period
-      const claims = await getRewardsByFilter(username, rewardType, period);
-
-      if (claims.length === 0) {
-        await interaction.editReply(`📊 No ${rewardType} claims found for **${username}** in Period ${period}`);
-        return;
-      }
-
-      // Calculate total
-      const total = claims.reduce((sum, claim) => sum + parseFloat(claim.amount), 0);
-
-      // Format reward type name
       const rewardTypeNames = {
         'lossback': 'Lossback',
         'wagerbonus': 'Wager Bonus',
@@ -1202,31 +1172,79 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
         'gw': 'Giveaway'
       };
 
-      // Build claims list
-      const claimsList = claims.map((claim, index) => {
-        const date = new Date(claim.timestamp);
-        const formattedDate = date.toLocaleString('en-US', { 
-          month: 'short', 
-          day: 'numeric', 
-          year: 'numeric',
-          hour: 'numeric',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: 'America/New_York'
-        });
-        return `**Claim #${index + 1}:** $${parseFloat(claim.amount).toFixed(2)} on ${formattedDate} EST`;
-      }).join('\n');
+      if (rewardType === 'all') {
+        const types = ['lossback', 'wagerbonus', 'depobonus', 'gw'];
+        const sites = [
+          { value: 'acebet', label: '🔵 Acebet' },
+          { value: 'packdraw', label: '🟣 Packdraw' }
+        ];
 
-      const message = `
-📊 **${rewardTypeNames[rewardType]} Claims - Period ${period}**
-Username: **${username}**
+        let grandTotal = 0;
+        let hasAnyClaims = false;
+        let fullBreakdown = '';
 
-${claimsList}
+        for (const s of sites) {
+          let siteTotal = 0;
+          let siteBreakdown = '';
 
-💰 **Total Claimed This Period:** $${total.toFixed(2)}
-      `.trim();
+          for (const type of types) {
+            const claims = await getRewardsByFilter(username, type, period, s.value);
+            if (claims.length > 0) {
+              const typeTotal = claims.reduce((sum, c) => sum + parseFloat(c.amount), 0);
+              siteTotal += typeTotal;
+              siteBreakdown += `💠 **${rewardTypeNames[type]}:** $${typeTotal.toFixed(2)} (${claims.length} claim${claims.length > 1 ? 's' : ''})\n`;
+            }
+          }
 
-      await interaction.editReply(message);
+          if (siteBreakdown) {
+            hasAnyClaims = true;
+            grandTotal += siteTotal;
+            fullBreakdown += `${s.label}\n${siteBreakdown}Subtotal: $${siteTotal.toFixed(2)}\n\n`;
+          }
+        }
+
+        if (!hasAnyClaims) {
+          await interaction.editReply(`📊 No claims found for **${username}** in Period ${period}`);
+          return;
+        }
+
+        const message = `📊 **All Claims - Period ${period}**\nUsername: **${username}**\n\n${fullBreakdown}💰 **Total Redeemed: $${grandTotal.toFixed(2)}**`.trim();
+        await interaction.editReply(message);
+
+      } else {
+        // Single type - site is required
+        if (!site) {
+          await interaction.editReply('❌ Please select a site when viewing a specific reward type.');
+          return;
+        }
+
+        const siteLabel = site.charAt(0).toUpperCase() + site.slice(1);
+        const claims = await getRewardsByFilter(username, rewardType, period, site);
+
+        if (claims.length === 0) {
+          await interaction.editReply(`📊 No ${rewardTypeNames[rewardType]} claims found for **${username}** on **${siteLabel}** in Period ${period}`);
+          return;
+        }
+
+        const total = claims.reduce((sum, claim) => sum + parseFloat(claim.amount), 0);
+
+        const claimsList = claims.map((claim, index) => {
+          const date = new Date(claim.timestamp);
+          const formattedDate = date.toLocaleString('en-US', { 
+            month: 'short', 
+            day: 'numeric', 
+            year: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+            timeZone: 'America/New_York'
+          });
+          return `**Claim #${index + 1}:** $${parseFloat(claim.amount).toFixed(2)} on ${formattedDate} EST`;
+        }).join('\n');
+
+        const message = `📊 **${rewardTypeNames[rewardType]} Claims [${siteLabel}] - Period ${period}**\nUsername: **${username}**\n\n${claimsList}\n\n💰 **Total Claimed This Period:** $${total.toFixed(2)}`.trim();
+        await interaction.editReply(message);
+      }
     } catch (error) {
       console.error('Error in claimed command:', error);
       await interaction.editReply('❌ An error occurred while fetching claim history.');
@@ -1239,17 +1257,13 @@ client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`Bot is ready to verify users under code R2K2`);
   
-  // Initialize database
   await initDatabase();
   
-  // Schedule weekly summary every Sunday at 10:00 AM EST
-  // Cron format: minute hour day month dayOfWeek
-  // 0 = Sunday, 0 10 = 10:00 AM
   cron.schedule('0 10 * * 0', () => {
     console.log('Running weekly summary...');
     sendWeeklySummary();
   }, {
-    timezone: "America/New_York" // EST/EDT
+    timezone: "America/New_York"
   });
   
   console.log('📅 Weekly summary scheduled for Sundays at 10:00 AM EST');
