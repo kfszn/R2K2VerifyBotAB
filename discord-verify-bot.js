@@ -3,7 +3,13 @@ const fs = require('fs').promises;
 const path = require('path');
 const cron = require('node-cron');
 const { Pool } = require('pg');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 require('dotenv').config();
+
+// Proxy agent for Cloudflare bypass
+const PROXY_URL = process.env.PROXY_URL;
+const proxyAgent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : undefined;
+console.log(`[boot] Proxy configured: ${!!proxyAgent} (${PROXY_URL || 'none'})`);
 
 // PostgreSQL connection
 const pool = new Pool({
@@ -199,6 +205,7 @@ async function getWeeklyStats() {
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${ACEBET_API_TOKEN}`, ...CF_HEADERS },
         cache: "no-store",
+        ...(proxyAgent ? { agent: proxyAgent } : {}),
       });
       
       if (response.ok) {
@@ -283,6 +290,7 @@ async function getAcebetUsers() {
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${ACEBET_API_TOKEN}`, ...CF_HEADERS },
       cache: "no-store",
+        ...(proxyAgent ? { agent: proxyAgent } : {}),
     });
     console.log('[acebet] Response status:', response.status);
     if (!response.ok) {
@@ -462,6 +470,7 @@ client.on('interactionCreate', async interaction => {
         const response = await fetch(url, {
           headers: { Authorization: `Bearer ${ACEBET_API_TOKEN}`, ...CF_HEADERS },
           cache: "no-store",
+        ...(proxyAgent ? { agent: proxyAgent } : {}),
         });
 
         console.log(`[wager] ${dateStr} → status: ${response.status}`);
