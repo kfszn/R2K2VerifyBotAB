@@ -11,10 +11,16 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
+// Cloudflare bypass headers — required or Acebet returns 403
+const CF_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Accept": "application/json",
+  "Referer": "https://acebet.co/",
+};
+
 // Initialize database tables
 async function initDatabase() {
   try {
-    // Create rewards table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS rewards (
         id SERIAL PRIMARY KEY,
@@ -29,12 +35,10 @@ async function initDatabase() {
       )
     `);
 
-    // Add site column if it doesn't exist (for existing databases)
     await pool.query(`
       ALTER TABLE rewards ADD COLUMN IF NOT EXISTS site VARCHAR(50) DEFAULT 'acebet'
     `);
     
-    // Create links table for Discord-Acebet linking
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_links (
         discord_id VARCHAR(255) PRIMARY KEY,
@@ -205,10 +209,12 @@ async function getWeeklyStats() {
     for (let d = new Date(lastSunday); d <= lastSaturday; d.setDate(d.getDate() + 1)) {
       const dateStr = formatDate(d);
       
-      const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${dateStr}`;
+      // FIX: Changed .com to .co + added CF headers
+      const url = `https://api.acebet.co/affiliates/detailed-summary/v2/${dateStr}`;
       const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${ACEBET_TOKEN}`,
+          ...CF_HEADERS,
         },
         cache: "no-store",
       });
@@ -317,10 +323,12 @@ const client = new Client({
 // Fetch Acebet users from API
 async function getAcebetUsers() {
   try {
-    const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${WAGER_WINDOW_START}`;
+    // FIX: Changed .com to .co + added CF headers
+    const url = `https://api.acebet.co/affiliates/detailed-summary/v2/${WAGER_WINDOW_START}`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${ACEBET_TOKEN}`,
+        ...CF_HEADERS,
       },
       cache: "no-store",
     });
@@ -687,10 +695,12 @@ client.on('interactionCreate', async interaction => {
       for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
         const dateStr = formatDate(d);
         
-        const url = `https://api.acebet.com/affiliates/detailed-summary/v2/${dateStr}`;
+        // FIX: Changed .com to .co + added CF headers
+        const url = `https://api.acebet.co/affiliates/detailed-summary/v2/${dateStr}`;
         const response = await fetch(url, {
           headers: {
             Authorization: `Bearer ${ACEBET_TOKEN}`,
+            ...CF_HEADERS,
           },
           cache: "no-store",
         });
@@ -1212,7 +1222,6 @@ ${eligibilityStatus}${eligibilityNote}${claimsHistory}
         await interaction.editReply(message);
 
       } else {
-        // Single type - site is required
         if (!site) {
           await interaction.editReply('❌ Please select a site when viewing a specific reward type.');
           return;
