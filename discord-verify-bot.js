@@ -4,6 +4,7 @@ const path = require('path');
 const cron = require('node-cron');
 const { Pool } = require('pg');
 const { HttpsProxyAgent } = require('https-proxy-agent');
+const fetch = require('node-fetch');
 require('dotenv').config();
 
 // Proxy agent for Cloudflare bypass
