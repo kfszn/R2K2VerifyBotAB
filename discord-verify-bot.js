@@ -57,7 +57,7 @@ async function initDatabase() {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
-const ACEBET_TOKEN = process.env.ACEBET_TOKEN;
+const ACEBET_API_TOKEN = process.env.ACEBET_API_TOKEN;
 const WAGER_WINDOW_START = process.env.WAGER_WINDOW_START || '2025-01-01';
 const OWNER_DISCORD_ID = '687823175647887394';
 
@@ -213,7 +213,7 @@ async function getWeeklyStats() {
       const url = `https://api.acebet.co/affiliates/detailed-summary/v2/${dateStr}`;
       const response = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${ACEBET_TOKEN}`,
+          Authorization: `Bearer ${ACEBET_API_TOKEN}`,
           ...CF_HEADERS,
         },
         cache: "no-store",
@@ -327,7 +327,7 @@ async function getAcebetUsers() {
     const url = `https://api.acebet.co/affiliates/detailed-summary/v2/${WAGER_WINDOW_START}`;
     const response = await fetch(url, {
       headers: {
-        Authorization: `Bearer ${ACEBET_TOKEN}`,
+        Authorization: `Bearer ${ACEBET_API_TOKEN}`,
         ...CF_HEADERS,
       },
       cache: "no-store",
@@ -699,7 +699,7 @@ client.on('interactionCreate', async interaction => {
         const url = `https://api.acebet.co/affiliates/detailed-summary/v2/${dateStr}`;
         const response = await fetch(url, {
           headers: {
-            Authorization: `Bearer ${ACEBET_TOKEN}`,
+            Authorization: `Bearer ${ACEBET_API_TOKEN}`,
             ...CF_HEADERS,
           },
           cache: "no-store",
