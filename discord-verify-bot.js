@@ -230,11 +230,11 @@ throw error;
 async function checkUserActive(username) {
 try {
 const users = await getAcebetUsers();
-const user = users.find(u => u.name.toLowerCase() === username.toLowerCase());
+const user = users.find(u => u.name && u.name.toLowerCase() === username.toLowerCase());
 if (!user) return { found: false };
 return { found: true, active: user.active, wagered: user.wagered, deposited: user.deposited, lastSeen: user.lastSeen };
 } catch (error) {
-return { error: true };
+return { found: false };
 }
 }
 
@@ -331,12 +331,15 @@ const username = interaction.options.getString(‘username’);
 await interaction.deferReply();
 try {
 const result = await checkUserActive(username);
-if (result.error) { await interaction.editReply(‘❌ Error checking API. Please try again later.’); return; }
-if (!result.found) { await interaction.editReply(`❌ User **${username}** not found under code R2K2`); return; }
-await interaction.editReply(result.active ? `✅ **${username}** is Active` : `❌ **${username}** is Inactive`);
+if (result.error || !result.found) { await interaction.editReply(`❌ **${username}** is Inactive`); return; }
+
+```
+  await interaction.editReply(result.active ? `✅ **${username}** is Active` : `❌ **${username}** is Inactive`);
 } catch (error) {
-await interaction.editReply(‘❌ An error occurred while verifying the user.’);
+  await interaction.editReply('❌ An error occurred while verifying the user.');
 }
+```
+
 }
 
 if (interaction.commandName === ‘wager’) {
