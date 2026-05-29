@@ -539,23 +539,50 @@ client.on('interactionCreate', async interaction => {
     try {
       const netLoss = pnl + rewardsClaimed;
       if (netLoss >= 0) { await interaction.editReply(`❌ **${username}** is in profit. Cannot claim lossback when in profit.\n\nNet P&L: $${netLoss.toFixed(2)}`); return; }
-      let tierName = '', percentage = 0, maxPayout = 0;
-      if (wagerAmount >= 0 && wagerAmount <= 99999) { tierName = 'Tier 1'; percentage = 5; maxPayout = 100; }
-      else if (wagerAmount >= 100000 && wagerAmount <= 499999) { tierName = 'Tier 2'; percentage = 10; maxPayout = 200; }
-      else if (wagerAmount >= 500000) { tierName = 'Tier 3'; percentage = 15; maxPayout = 300; }
+
+      // New tier structure — 10% flat for everyone, cap based on monthly wager
+      const percentage = 10;
+      let tierLabel = '', maxPayout = 0;
+      if (wagerAmount >= 0 && wagerAmount <= 50000) { tierLabel = '$0–$50,000'; maxPayout = 100; }
+      else if (wagerAmount <= 99999) { tierLabel = '$50,001–$99,999'; maxPayout = 200; }
+      else if (wagerAmount <= 249999) { tierLabel = '$100,000–$249,999'; maxPayout = 300; }
+      else if (wagerAmount <= 499999) { tierLabel = '$250,000–$499,999'; maxPayout = 500; }
+      else { tierLabel = '$500,001–$1,000,000'; maxPayout = 750; }
+
       const lossbackOwed = Math.abs(netLoss) * (percentage / 100);
-      const finalPayout = Math.min(lossbackOwed, maxPayout);
+      const calculatedPayout = Math.min(lossbackOwed, maxPayout);
+
+      // Fetch all lossback claims for this user this period
       const userLossbackClaims = await getRewardsByFilter(username, 'lossback', period);
-      let eligibilityStatus = '✅ ELIGIBLE', eligibilityNote = '';
-      if (userLossbackClaims.length === 0) {
-        if (netLoss > -300) { eligibilityStatus = '❌ INELIGIBLE'; eligibilityNote = `\n\n**Not eligible yet.** Need $${(300-Math.abs(netLoss)).toFixed(2)} more net loss to claim.\n(Minimum -$300 net loss required for first claim)`; }
+      const totalAlreadyClaimed = userLossbackClaims.reduce((sum, c) => sum + parseFloat(c.amount), 0);
+      const remainingCap = Math.max(0, maxPayout - totalAlreadyClaimed);
+      const finalPayout = Math.min(calculatedPayout, remainingCap);
+
+      // Build claims history block
+      let claimsBlock = '';
+      if (userLossbackClaims.length > 0) {
+        const claimLines = userLossbackClaims.map((c, i) => {
+          const date = new Date(c.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
+          return `  Claim #${i+1}: $${parseFloat(c.amount).toFixed(2)} — ${date} EST`;
+        }).join('\n');
+        claimsBlock = `\n\n📋 **Claims This Period (${period}):**\n${claimLines}\n• Total Claimed: $${totalAlreadyClaimed.toFixed(2)}\n• Remaining Cap: $${remainingCap.toFixed(2)} of $${maxPayout} max`;
       } else {
-        const lastClaim = userLossbackClaims[userLossbackClaims.length - 1];
-        const requiredNetLoss = (lastClaim.net_loss || 0) - 300;
-        if (netLoss > requiredNetLoss) { eligibilityStatus = '❌ INELIGIBLE'; eligibilityNote = `\n\n**Not eligible yet.** Need $${Math.abs(requiredNetLoss-netLoss).toFixed(2)} more net loss to claim again.\n(Last claim at $${parseFloat(lastClaim.net_loss).toFixed(2)}. Need $${requiredNetLoss.toFixed(2)})`; }
+        claimsBlock = `\n\n📋 **Claims This Period (${period}):** None yet`;
       }
-      const claimsHistory = userLossbackClaims.length > 0 ? `\n\n**Previous Claims in Period ${period}:**\n${userLossbackClaims.map((c,i) => `Claim #${i+1}: $${parseFloat(c.amount).toFixed(2)} (Net Loss: $${parseFloat(c.net_loss).toFixed(2)})`).join('\n')}` : '';
-      await interaction.editReply(`**Lossback Calculation - Period ${period}**\nUsername: **${username}**\n\n📊 **Calculation:**\n• P&L: $${pnl.toFixed(2)}\n• Rewards Claimed: $${rewardsClaimed.toFixed(2)}\n• **Net Loss: $${netLoss.toFixed(2)}**\n\n💰 **Wager Tier:**\n• Total Wager: $${wagerAmount.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}\n• ${tierName} (${percentage}%, max $${maxPayout})\n\n🎯 **Lossback Calculation:**\n• $${Math.abs(netLoss).toFixed(2)} × ${percentage}% = $${lossbackOwed.toFixed(2)}\n• Capped at $${maxPayout} max\n• **Lossback Owed: $${finalPayout.toFixed(2)}**\n\n${eligibilityStatus}${eligibilityNote}${claimsHistory}`.trim());
+
+      // Eligibility
+      let eligibilityStatus = '', eligibilityNote = '';
+      if (remainingCap <= 0) {
+        eligibilityStatus = '🚫 CAP REACHED';
+        eligibilityNote = `\n**${username} has already claimed the full $${maxPayout} cap for this wager tier this period.**`;
+      } else if (finalPayout <= 0) {
+        eligibilityStatus = '❌ INELIGIBLE';
+        eligibilityNote = `\n**No lossback owed** — net loss too low for a payout at 10%.`;
+      } else {
+        eligibilityStatus = '✅ ELIGIBLE';
+      }
+
+      await interaction.editReply(`**Lossback Calculation — Period ${period}**\nUsername: **${username}**\n\n📊 **Net Loss Calculation:**\n• P&L: $${pnl.toFixed(2)}\n• Rewards Claimed: $${rewardsClaimed.toFixed(2)}\n• **Net Loss: $${netLoss.toFixed(2)}**\n\n💰 **Wager Tier:**\n• Total Wager: $${wagerAmount.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}\n• Bracket: ${tierLabel}\n• Rate: 10% — Monthly Cap: $${maxPayout}\n\n🎯 **Lossback:**\n• $${Math.abs(netLoss).toFixed(2)} × 10% = $${lossbackOwed.toFixed(2)}\n• Capped at $${maxPayout} (tier max)\n• Already Claimed: $${totalAlreadyClaimed.toFixed(2)}\n• **Eligible Now: $${finalPayout.toFixed(2)}**${claimsBlock}\n\n${eligibilityStatus}${eligibilityNote}`.trim());
     } catch (error) {
       await interaction.editReply('❌ An error occurred while calculating lossback.');
     }
