@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const cron = require('node-cron');
@@ -318,10 +318,22 @@ async function registerCommands() {
       .setName('claimed').setDescription('View claim history for a user (Staff/Owner only)')
       .addStringOption(o => o.setName('username').setDescription('Acebet username').setRequired(true))
       .addStringOption(o => o.setName('reward_type').setDescription('Type of reward').setRequired(true).addChoices(...REWARD_TYPE_CHOICES_WITH_ALL))
-      .addIntegerOption(o => o.setName('period').setDescription('Period number (1-12)').setRequired(true).setMinValue(1).setMaxValue(12)),
+      .addStringOption(o => o.setName('period').setDescription('Period number or all').setRequired(true).addChoices(
+        { name: 'All Periods', value: 'all' },
+        ...Array.from({length: 12}, (_, i) => ({ name: `Period ${i+1}`, value: String(i+1) }))
+      )),
     new SlashCommandBuilder()
       .setName('payouts').setDescription('Detailed payout breakdown for a period (Owner only)')
-      .addIntegerOption(o => o.setName('period').setDescription('Period number (1-12)').setRequired(true).setMinValue(1).setMaxValue(12)),
+      .addStringOption(o => o.setName('period').setDescription('Period number or all').setRequired(true).addChoices(
+        { name: 'All Periods', value: 'all' },
+        ...Array.from({length: 12}, (_, i) => ({ name: `Period ${i+1}`, value: String(i+1) }))
+      )),
+    new SlashCommandBuilder()
+      .setName('giveaway').setDescription('Start a giveaway (Owner only)')
+      .addStringOption(o => o.setName('prize').setDescription('What are you giving away?').setRequired(true))
+      .addIntegerOption(o => o.setName('duration').setDescription('Duration in minutes').setRequired(true).setMinValue(1).setMaxValue(10080))
+      .addChannelOption(o => o.setName('channel').setDescription('Channel to post the giveaway in').setRequired(true))
+      .addRoleOption(o => o.setName('role').setDescription('Required role to enter').setRequired(true)),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
@@ -334,7 +346,75 @@ async function registerCommands() {
   }
 }
 
+// In-memory giveaway store: messageId -> { prize, endsAt, roleId, channelId, entries: Set<userId>, messageId }
+const giveaways = new Map();
+
+async function rollGiveawayWinner(messageId, channel) {
+  const gw = giveaways.get(messageId);
+  if (!gw) return;
+  giveaways.delete(messageId);
+
+  try {
+    const msg = await channel.messages.fetch(messageId);
+    const disabledBtn = new ButtonBuilder().setCustomId('giveaway_enter').setLabel('🎉 Giveaway Ended').setStyle(ButtonStyle.Secondary).setDisabled(true);
+    const row = new ActionRowBuilder().addComponents(disabledBtn);
+
+    if (gw.entries.size === 0) {
+      const embed = new EmbedBuilder().setTitle(`🎉 GIVEAWAY — ${gw.prize}`).setColor(0x888888).setDescription(`**No entries!** No winner this time.`).setTimestamp();
+      await msg.edit({ embeds: [embed], components: [row] });
+      await channel.send(`😢 The giveaway for **${gw.prize}** ended with no entries.`);
+      return;
+    }
+
+    const entriesArr = [...gw.entries];
+    const winnerId = entriesArr[Math.floor(Math.random() * entriesArr.length)];
+    const embed = new EmbedBuilder().setTitle(`🎉 GIVEAWAY — ${gw.prize}`).setColor(0x00FF00).setDescription(`**Winner: <@${winnerId}>** 🏆\n\n**Total Entries:** ${gw.entries.size}`).setTimestamp();
+    await msg.edit({ embeds: [embed], components: [row] });
+    await channel.send(`🎉 Congratulations <@${winnerId}>! You won **${gw.prize}**!`);
+  } catch (err) {
+    console.error('[giveaway] Error rolling winner:', err);
+  }
+}
+
 client.on('interactionCreate', async interaction => {
+  // ── GIVEAWAY ENTER BUTTON ─────────────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === 'giveaway_enter') {
+    const gw = giveaways.get(interaction.message.id);
+    if (!gw) {
+      await interaction.reply({ content: '❌ This giveaway has already ended.', ephemeral: true });
+      return;
+    }
+    if (Date.now() > gw.endsAt.getTime()) {
+      await interaction.reply({ content: '❌ This giveaway has ended.', ephemeral: true });
+      return;
+    }
+    const member = interaction.member;
+    if (!member.roles.cache.has(gw.roleId)) {
+      await interaction.reply({ content: `❌ You need the <@&${gw.roleId}> role to enter this giveaway.`, ephemeral: true });
+      return;
+    }
+    if (gw.entries.has(interaction.user.id)) {
+      await interaction.reply({ content: '✅ You\'re already entered!', ephemeral: true });
+      return;
+    }
+    gw.entries.add(interaction.user.id);
+
+    // Update embed entry count
+    try {
+      const embed = new EmbedBuilder()
+        .setTitle(`🎉 GIVEAWAY — ${gw.prize}`)
+        .setColor(0xFFD700)
+        .setDescription(`Click **Enter** to join!\n\n**Required Role:** <@&${gw.roleId}>\n**Entries:** ${gw.entries.size}\n**Ends:** <t:${Math.floor(gw.endsAt.getTime()/1000)}:R>`)
+        .setFooter({ text: `Ends at` })
+        .setTimestamp(gw.endsAt);
+      await interaction.message.edit({ embeds: [embed] });
+    } catch (err) {
+      console.error('[giveaway] Error updating embed:', err);
+    }
+    await interaction.reply({ content: `✅ You've entered the giveaway for **${gw.prize}**! Good luck! 🎉`, ephemeral: true });
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const staffOnlyCommands = ['acebet', 'wager', 'linkuser', 'unlinkuser', 'checklink', 'lossback', 'claimed'];
@@ -613,34 +693,65 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName === 'claimed') {
     const username = interaction.options.getString('username');
     const rewardType = interaction.options.getString('reward_type');
-    const period = interaction.options.getInteger('period');
+    const periodRaw = interaction.options.getString('period');
+    const period = periodRaw === 'all' ? 'all' : parseInt(periodRaw);
     await interaction.deferReply({ ephemeral: false });
     try {
-      if (rewardType === 'all') {
-        const claims = await getRewardsByFilter(username, 'all', period);
-        if (claims.length === 0) { await interaction.editReply(`📊 No claims found for **${username}** in Period ${period}`); return; }
-        const byType = {};
-        claims.forEach(c => {
-          const t = c.reward_type;
-          if (!byType[t]) byType[t] = { total: 0, count: 0 };
-          byType[t].total += parseFloat(c.amount);
-          byType[t].count++;
-        });
-        const grandTotal = claims.reduce((sum, c) => sum + parseFloat(c.amount), 0);
+      // Build query based on period + rewardType
+      let claims;
+      if (period === 'all' && rewardType === 'all') {
+        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) ORDER BY period ASC, timestamp ASC`, [username]);
+        claims = result.rows;
+      } else if (period === 'all') {
+        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) AND reward_type = $2 ORDER BY period ASC, timestamp ASC`, [username, rewardType]);
+        claims = result.rows;
+      } else {
+        claims = await getRewardsByFilter(username, rewardType, period);
+      }
+
+      if (claims.length === 0) {
+        const periodLabel = period === 'all' ? 'any period' : `Period ${period}`;
+        await interaction.editReply(`📊 No claims found for **${username}** in ${periodLabel}`);
+        return;
+      }
+
+      const byType = {};
+      const byPeriod = {};
+      claims.forEach(c => {
+        const t = c.reward_type;
+        const p = c.period;
+        if (!byType[t]) byType[t] = { total: 0, count: 0 };
+        byType[t].total += parseFloat(c.amount);
+        byType[t].count++;
+        if (!byPeriod[p]) byPeriod[p] = 0;
+        byPeriod[p] += parseFloat(c.amount);
+      });
+      const grandTotal = claims.reduce((sum, c) => sum + parseFloat(c.amount), 0);
+
+      if (period === 'all') {
+        // Show breakdown by period and by type
+        let periodBreakdown = '';
+        for (const [p, total] of Object.entries(byPeriod).sort((a,b) => a[0]-b[0])) {
+          periodBreakdown += `📅 **Period ${p}:** $${total.toFixed(2)}\n`;
+        }
+        let typeBreakdown = '';
+        for (const [type, data] of Object.entries(byType)) {
+          typeBreakdown += `💠 **${REWARD_TYPE_NAMES[type]||type}:** $${data.total.toFixed(2)} (${data.count} claim${data.count>1?'s':''})\n`;
+        }
+        const periodLabel = rewardType === 'all' ? 'All Types' : REWARD_TYPE_NAMES[rewardType]||rewardType;
+        await interaction.editReply(`📊 **All-Time Claims — ${periodLabel}**\nUsername: **${username}**\n\n**By Period:**\n${periodBreakdown}\n**By Type:**\n${typeBreakdown}\n💰 **Total All-Time: $${grandTotal.toFixed(2)}** (${claims.length} claims)`);
+      } else if (rewardType === 'all') {
         let breakdown = '';
         for (const [type, data] of Object.entries(byType)) {
           breakdown += `💠 **${REWARD_TYPE_NAMES[type]||type}:** $${data.total.toFixed(2)} (${data.count} claim${data.count>1?'s':''})\n`;
         }
         await interaction.editReply(`📊 **All Claims - Period ${period}**\nUsername: **${username}**\n\n${breakdown}\n💰 **Total Redeemed: $${grandTotal.toFixed(2)}**`);
       } else {
-        const claims = await getRewardsByFilter(username, rewardType, period);
-        if (claims.length === 0) { await interaction.editReply(`📊 No ${REWARD_TYPE_NAMES[rewardType]} claims found for **${username}** in Period ${period}`); return; }
-        const total = claims.reduce((sum, c) => sum + parseFloat(c.amount), 0);
         const claimsList = claims.map((c, i) => {
           const date = new Date(c.timestamp).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true, timeZone:'America/New_York' });
           return `**Claim #${i+1}:** $${parseFloat(c.amount).toFixed(2)} on ${date} EST`;
         }).join('\n');
-        await interaction.editReply(`📊 **${REWARD_TYPE_NAMES[rewardType]} Claims - Period ${period}**\nUsername: **${username}**\n\n${claimsList}\n\n💰 **Total Claimed This Period:** $${total.toFixed(2)}`);
+        await interaction.editReply(`📊 **${REWARD_TYPE_NAMES[rewardType]} Claims - Period ${period}**\nUsername: **${username}**\n\n${claimsList}\n\n💰 **Total Claimed This Period:** $${grandTotal.toFixed(2)}`);
       }
     } catch (error) {
       await interaction.editReply('❌ An error occurred while fetching claim history.');
@@ -649,28 +760,47 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'payouts') {
     if (interaction.user.id !== OWNER_DISCORD_ID) { await interaction.reply({ content: '❌ Owner only.', ephemeral: true }); return; }
-    const period = interaction.options.getInteger('period');
+    const periodRaw = interaction.options.getString('period');
+    const period = periodRaw === 'all' ? 'all' : parseInt(periodRaw);
     await interaction.deferReply({ ephemeral: true });
     try {
-      const { startDateStr, endDateStr } = getPeriodDates(period);
-      const result = await pool.query('SELECT * FROM rewards WHERE period = $1 ORDER BY username ASC, timestamp ASC', [period]);
-      const claims = result.rows;
-      if (claims.length === 0) { await interaction.editReply(`📊 No payouts recorded for Period ${period} (${startDateStr} – ${endDateStr})`); return; }
-      const categoryTotals = {}, categoryCounts = {}, userTotals = {}, userClaims = {};
+      let claims, periodLabel;
+      if (period === 'all') {
+        const result = await pool.query('SELECT * FROM rewards ORDER BY period ASC, username ASC, timestamp ASC');
+        claims = result.rows;
+        periodLabel = 'All Periods';
+      } else {
+        const { startDateStr, endDateStr } = getPeriodDates(period);
+        const result = await pool.query('SELECT * FROM rewards WHERE period = $1 ORDER BY username ASC, timestamp ASC', [period]);
+        claims = result.rows;
+        periodLabel = `Period ${period} (${startDateStr} – ${endDateStr})`;
+      }
+      if (claims.length === 0) { await interaction.editReply(`📊 No payouts recorded for ${periodLabel}`); return; }
+      const categoryTotals = {}, categoryCounts = {}, userTotals = {}, userClaims = {}, periodTotals = {};
       for (const claim of claims) {
         const amount = parseFloat(claim.amount);
         const type = claim.reward_type;
         const user = claim.username;
+        const p = claim.period;
         categoryTotals[type] = (categoryTotals[type] || 0) + amount;
         categoryCounts[type] = (categoryCounts[type] || 0) + 1;
         if (!userTotals[user]) userTotals[user] = 0;
         userTotals[user] += amount;
         if (!userClaims[user]) userClaims[user] = [];
         userClaims[user].push(claim);
+        if (period === 'all') { periodTotals[p] = (periodTotals[p] || 0) + amount; }
       }
       const grandTotal = Object.values(categoryTotals).reduce((a,b) => a+b, 0);
       const uniqueUsers = Object.keys(userTotals).length;
-      let msg = `💸 **Payouts — Period ${period}** (${startDateStr} – ${endDateStr})\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n📂 **By Category**\n`;
+      let msg = `💸 **Payouts — ${periodLabel}**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      if (period === 'all') {
+        msg += `📅 **By Period**\n`;
+        for (const [p, total] of Object.entries(periodTotals).sort((a,b) => a[0]-b[0])) {
+          msg += `• Period ${p}: **$${total.toFixed(2)}**\n`;
+        }
+        msg += `\n`;
+      }
+      msg += `📂 **By Category**\n`;
       for (const [type, total] of Object.entries(categoryTotals).sort((a,b) => b[1]-a[1])) {
         const count = categoryCounts[type];
         msg += `• ${REWARD_TYPE_NAMES[type]||type}: **$${total.toFixed(2)}** (${count} claim${count!==1?'s':''})\n`;
@@ -681,7 +811,8 @@ client.on('interactionCreate', async interaction => {
         for (const c of claimList) {
           const date = new Date(c.timestamp).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true, timeZone:'America/New_York' });
           const netNote = c.net_loss ? ` (net loss: $${parseFloat(c.net_loss).toFixed(2)})` : '';
-          msg += `  🔵 ${REWARD_TYPE_NAMES[c.reward_type]||c.reward_type}: $${parseFloat(c.amount).toFixed(2)}${netNote} — ${date} EST\n`;
+          const pNote = period === 'all' ? ` [P${c.period}]` : '';
+          msg += `  🔵 ${REWARD_TYPE_NAMES[c.reward_type]||c.reward_type}: $${parseFloat(c.amount).toFixed(2)}${netNote}${pNote} — ${date} EST\n`;
         }
       }
       msg += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💰 **Grand Total Paid: $${grandTotal.toFixed(2)}** across ${claims.length} claim${claims.length!==1?'s':''}`;
@@ -703,6 +834,38 @@ client.on('interactionCreate', async interaction => {
     } catch (error) {
       await interaction.editReply('❌ An error occurred while fetching payout data.');
     }
+  }
+  // ── GIVEAWAY ──────────────────────────────────────────────────────────────
+  if (interaction.commandName === 'giveaway') {
+    if (interaction.user.id !== OWNER_DISCORD_ID) {
+      await interaction.reply({ content: '❌ Only the owner can start giveaways.', ephemeral: true });
+      return;
+    }
+    const prize = interaction.options.getString('prize');
+    const duration = interaction.options.getInteger('duration');
+    const channel = interaction.options.getChannel('channel');
+    const role = interaction.options.getRole('role');
+    const endsAt = new Date(Date.now() + duration * 60 * 1000);
+
+    const enterBtn = new ButtonBuilder().setCustomId('giveaway_enter').setLabel('🎉 Enter').setStyle(ButtonStyle.Primary);
+    const row = new ActionRowBuilder().addComponents(enterBtn);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🎉 GIVEAWAY — ${prize}`)
+      .setColor(0xFFD700)
+      .setDescription(`Click **Enter** to join!\n\n**Required Role:** <@&${role.id}>\n**Entries:** 0\n**Ends:** <t:${Math.floor(endsAt.getTime()/1000)}:R>`)
+      .setFooter({ text: `Ends at` })
+      .setTimestamp(endsAt);
+
+    const msg = await channel.send({ embeds: [embed], components: [row] });
+    giveaways.set(msg.id, { prize, endsAt, roleId: role.id, channelId: channel.id, entries: new Set(), messageId: msg.id });
+
+    await interaction.reply({ content: `✅ Giveaway started in <#${channel.id}>!`, ephemeral: true });
+
+    // Auto-roll winner when duration expires
+    setTimeout(async () => {
+      await rollGiveawayWinner(msg.id, channel);
+    }, duration * 60 * 1000);
   }
 });
 
