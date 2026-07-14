@@ -89,6 +89,15 @@ const REWARD_TYPE_CHOICES_WITH_ALL = [
   { name: 'All', value: 'all' },
 ];
 
+const SITE_CHOICES = [
+  { name: 'Acebet', value: 'acebet' },
+  { name: 'LuxDrop', value: 'luxdrop' },
+];
+const SITE_CHOICES_WITH_ALL = [
+  ...SITE_CHOICES,
+  { name: 'All Sites', value: 'all' },
+];
+
 async function loadLinks() {
   try {
     const result = await pool.query('SELECT * FROM user_links');
@@ -309,25 +318,28 @@ async function registerCommands() {
       .addIntegerOption(o => o.setName('period').setDescription('Period number (1-12)').setRequired(true).setMinValue(1).setMaxValue(12)),
     new SlashCommandBuilder()
       .setName('claim').setDescription('Record a reward payment (Owner only)')
-      .addStringOption(o => o.setName('username').setDescription('Acebet username').setRequired(true))
+      .addStringOption(o => o.setName('username').setDescription('Username').setRequired(true))
       .addStringOption(o => o.setName('reward_type').setDescription('Type of reward').setRequired(true).addChoices(...REWARD_TYPE_CHOICES))
       .addNumberOption(o => o.setName('amount').setDescription('Amount being paid').setRequired(true))
       .addIntegerOption(o => o.setName('period').setDescription('Period number (1-12)').setRequired(true).setMinValue(1).setMaxValue(12))
+      .addStringOption(o => o.setName('site').setDescription('Platform (default: acebet)').setRequired(false).addChoices(...SITE_CHOICES))
       .addNumberOption(o => o.setName('net_loss').setDescription('Net loss value (for lossback only)').setRequired(false)),
     new SlashCommandBuilder()
       .setName('claimed').setDescription('View claim history for a user (Staff/Owner only)')
-      .addStringOption(o => o.setName('username').setDescription('Acebet username').setRequired(true))
+      .addStringOption(o => o.setName('username').setDescription('Username').setRequired(true))
       .addStringOption(o => o.setName('reward_type').setDescription('Type of reward').setRequired(true).addChoices(...REWARD_TYPE_CHOICES_WITH_ALL))
       .addStringOption(o => o.setName('period').setDescription('Period number or all').setRequired(true).addChoices(
         { name: 'All Periods', value: 'all' },
         ...Array.from({length: 12}, (_, i) => ({ name: `Period ${i+1}`, value: String(i+1) }))
-      )),
+      ))
+      .addStringOption(o => o.setName('site').setDescription('Platform (default: all)').setRequired(false).addChoices(...SITE_CHOICES_WITH_ALL)),
     new SlashCommandBuilder()
       .setName('payouts').setDescription('Detailed payout breakdown for a period (Owner only)')
       .addStringOption(o => o.setName('period').setDescription('Period number or all').setRequired(true).addChoices(
         { name: 'All Periods', value: 'all' },
         ...Array.from({length: 12}, (_, i) => ({ name: `Period ${i+1}`, value: String(i+1) }))
-      )),
+      ))
+      .addStringOption(o => o.setName('site').setDescription('Platform (default: all)').setRequired(false).addChoices(...SITE_CHOICES_WITH_ALL)),
     new SlashCommandBuilder()
       .setName('giveaway').setDescription('Start a giveaway (Owner only)')
       .addStringOption(o => o.setName('prize').setDescription('What are you giving away?').setRequired(true))
@@ -674,6 +686,7 @@ client.on('interactionCreate', async interaction => {
     const rewardType = interaction.options.getString('reward_type');
     const amount = interaction.options.getNumber('amount');
     const period = interaction.options.getInteger('period');
+    const site = interaction.options.getString('site') || 'acebet';
     const netLoss = interaction.options.getNumber('net_loss');
     await interaction.deferReply({ ephemeral: false });
     try {
@@ -681,10 +694,11 @@ client.on('interactionCreate', async interaction => {
         username, reward_type: rewardType, amount, period,
         claimed_by: interaction.user.id, timestamp: new Date().toISOString(),
         net_loss: (rewardType === 'lossback' && netLoss !== null) ? netLoss : null,
-        site: 'acebet'
+        site
       });
+      const siteLabel = site === 'luxdrop' ? 'LuxDrop' : 'Acebet';
       const netLossNote = (rewardType === 'lossback' && netLoss !== null) ? `\n(Net Loss: $${netLoss.toFixed(2)})` : '';
-      await interaction.editReply(`✅ Successfully recorded **$${amount.toFixed(2)} ${REWARD_TYPE_NAMES[rewardType]}** for **${username}** on **Acebet** in Period ${period}${netLossNote}`);
+      await interaction.editReply(`✅ Successfully recorded **$${amount.toFixed(2)} ${REWARD_TYPE_NAMES[rewardType]}** for **${username}** on **${siteLabel}** in Period ${period}${netLossNote}`);
     } catch (error) {
       await interaction.editReply('❌ An error occurred while recording the claim.');
     }
@@ -695,41 +709,47 @@ client.on('interactionCreate', async interaction => {
     const rewardType = interaction.options.getString('reward_type');
     const periodRaw = interaction.options.getString('period');
     const period = periodRaw === 'all' ? 'all' : parseInt(periodRaw);
+    const siteFilter = interaction.options.getString('site') || 'all';
     await interaction.deferReply({ ephemeral: false });
     try {
-      // Build query based on period + rewardType
       let claims;
+      const siteClause = siteFilter === 'all' ? '' : `AND site = '${siteFilter}'`;
+
       if (period === 'all' && rewardType === 'all') {
-        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) ORDER BY period ASC, timestamp ASC`, [username]);
+        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) ${siteClause} ORDER BY period ASC, timestamp ASC`, [username]);
         claims = result.rows;
       } else if (period === 'all') {
-        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) AND reward_type = $2 ORDER BY period ASC, timestamp ASC`, [username, rewardType]);
+        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) AND reward_type = $2 ${siteClause} ORDER BY period ASC, timestamp ASC`, [username, rewardType]);
+        claims = result.rows;
+      } else if (rewardType === 'all') {
+        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) AND period = $2 ${siteClause} ORDER BY timestamp ASC`, [username, period]);
         claims = result.rows;
       } else {
-        claims = await getRewardsByFilter(username, rewardType, period);
+        const result = await pool.query(`SELECT * FROM rewards WHERE LOWER(username) = LOWER($1) AND reward_type = $2 AND period = $3 ${siteClause} ORDER BY timestamp ASC`, [username, rewardType, period]);
+        claims = result.rows;
       }
+
+      const siteLabel = siteFilter === 'all' ? 'All Sites' : siteFilter === 'luxdrop' ? 'LuxDrop' : 'Acebet';
 
       if (claims.length === 0) {
         const periodLabel = period === 'all' ? 'any period' : `Period ${period}`;
-        await interaction.editReply(`📊 No claims found for **${username}** in ${periodLabel}`);
+        await interaction.editReply(`📊 No claims found for **${username}** in ${periodLabel} on ${siteLabel}`);
         return;
       }
 
-      const byType = {};
-      const byPeriod = {};
+      const byType = {}, byPeriod = {}, bySite = {};
       claims.forEach(c => {
-        const t = c.reward_type;
-        const p = c.period;
+        const t = c.reward_type, p = c.period, s = c.site || 'acebet';
         if (!byType[t]) byType[t] = { total: 0, count: 0 };
-        byType[t].total += parseFloat(c.amount);
-        byType[t].count++;
+        byType[t].total += parseFloat(c.amount); byType[t].count++;
         if (!byPeriod[p]) byPeriod[p] = 0;
         byPeriod[p] += parseFloat(c.amount);
+        if (!bySite[s]) bySite[s] = 0;
+        bySite[s] += parseFloat(c.amount);
       });
       const grandTotal = claims.reduce((sum, c) => sum + parseFloat(c.amount), 0);
 
       if (period === 'all') {
-        // Show breakdown by period and by type
         let periodBreakdown = '';
         for (const [p, total] of Object.entries(byPeriod).sort((a,b) => a[0]-b[0])) {
           periodBreakdown += `📅 **Period ${p}:** $${total.toFixed(2)}\n`;
@@ -738,20 +758,22 @@ client.on('interactionCreate', async interaction => {
         for (const [type, data] of Object.entries(byType)) {
           typeBreakdown += `💠 **${REWARD_TYPE_NAMES[type]||type}:** $${data.total.toFixed(2)} (${data.count} claim${data.count>1?'s':''})\n`;
         }
-        const periodLabel = rewardType === 'all' ? 'All Types' : REWARD_TYPE_NAMES[rewardType]||rewardType;
-        await interaction.editReply(`📊 **All-Time Claims — ${periodLabel}**\nUsername: **${username}**\n\n**By Period:**\n${periodBreakdown}\n**By Type:**\n${typeBreakdown}\n💰 **Total All-Time: $${grandTotal.toFixed(2)}** (${claims.length} claims)`);
+        let siteBreakdown = siteFilter === 'all' ? '\n**By Site:**\n' + Object.entries(bySite).map(([s,t]) => `🌐 **${s === 'luxdrop' ? 'LuxDrop' : 'Acebet'}:** $${t.toFixed(2)}`).join('\n') + '\n' : '';
+        const typeLabel = rewardType === 'all' ? 'All Types' : REWARD_TYPE_NAMES[rewardType]||rewardType;
+        await interaction.editReply(`📊 **All-Time Claims — ${typeLabel} | ${siteLabel}**\nUsername: **${username}**\n\n**By Period:**\n${periodBreakdown}${siteBreakdown}\n**By Type:**\n${typeBreakdown}\n💰 **Total All-Time: $${grandTotal.toFixed(2)}** (${claims.length} claims)`);
       } else if (rewardType === 'all') {
         let breakdown = '';
         for (const [type, data] of Object.entries(byType)) {
           breakdown += `💠 **${REWARD_TYPE_NAMES[type]||type}:** $${data.total.toFixed(2)} (${data.count} claim${data.count>1?'s':''})\n`;
         }
-        await interaction.editReply(`📊 **All Claims - Period ${period}**\nUsername: **${username}**\n\n${breakdown}\n💰 **Total Redeemed: $${grandTotal.toFixed(2)}**`);
+        await interaction.editReply(`📊 **All Claims - Period ${period} | ${siteLabel}**\nUsername: **${username}**\n\n${breakdown}\n💰 **Total Redeemed: $${grandTotal.toFixed(2)}**`);
       } else {
         const claimsList = claims.map((c, i) => {
           const date = new Date(c.timestamp).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true, timeZone:'America/New_York' });
-          return `**Claim #${i+1}:** $${parseFloat(c.amount).toFixed(2)} on ${date} EST`;
+          const siteTag = siteFilter === 'all' ? ` [${c.site === 'luxdrop' ? 'LuxDrop' : 'Acebet'}]` : '';
+          return `**Claim #${i+1}:** $${parseFloat(c.amount).toFixed(2)}${siteTag} on ${date} EST`;
         }).join('\n');
-        await interaction.editReply(`📊 **${REWARD_TYPE_NAMES[rewardType]} Claims - Period ${period}**\nUsername: **${username}**\n\n${claimsList}\n\n💰 **Total Claimed This Period:** $${grandTotal.toFixed(2)}`);
+        await interaction.editReply(`📊 **${REWARD_TYPE_NAMES[rewardType]} Claims - Period ${period} | ${siteLabel}**\nUsername: **${username}**\n\n${claimsList}\n\n💰 **Total Claimed This Period:** $${grandTotal.toFixed(2)}`);
       }
     } catch (error) {
       await interaction.editReply('❌ An error occurred while fetching claim history.');
@@ -762,37 +784,49 @@ client.on('interactionCreate', async interaction => {
     if (interaction.user.id !== OWNER_DISCORD_ID) { await interaction.reply({ content: '❌ Owner only.', ephemeral: true }); return; }
     const periodRaw = interaction.options.getString('period');
     const period = periodRaw === 'all' ? 'all' : parseInt(periodRaw);
+    const siteFilter = interaction.options.getString('site') || 'all';
+    const siteLabel = siteFilter === 'all' ? 'All Sites' : siteFilter === 'luxdrop' ? 'LuxDrop' : 'Acebet';
+    const siteClause = siteFilter === 'all' ? '' : `AND site = '${siteFilter}'`;
     await interaction.deferReply({ ephemeral: true });
     try {
       let claims, periodLabel;
       if (period === 'all') {
-        const result = await pool.query('SELECT * FROM rewards ORDER BY period ASC, username ASC, timestamp ASC');
+        const result = await pool.query(`SELECT * FROM rewards WHERE 1=1 ${siteClause} ORDER BY period ASC, username ASC, timestamp ASC`);
         claims = result.rows;
-        periodLabel = 'All Periods';
+        periodLabel = `All Periods | ${siteLabel}`;
       } else {
         const { startDateStr, endDateStr } = getPeriodDates(period);
-        const result = await pool.query('SELECT * FROM rewards WHERE period = $1 ORDER BY username ASC, timestamp ASC', [period]);
+        const result = await pool.query(`SELECT * FROM rewards WHERE period = $1 ${siteClause} ORDER BY username ASC, timestamp ASC`, [period]);
         claims = result.rows;
-        periodLabel = `Period ${period} (${startDateStr} – ${endDateStr})`;
+        periodLabel = `Period ${period} (${startDateStr} – ${endDateStr}) | ${siteLabel}`;
       }
       if (claims.length === 0) { await interaction.editReply(`📊 No payouts recorded for ${periodLabel}`); return; }
-      const categoryTotals = {}, categoryCounts = {}, userTotals = {}, userClaims = {}, periodTotals = {};
+      const categoryTotals = {}, categoryCounts = {}, userTotals = {}, userClaims = {}, periodTotals = {}, siteTotals = {};
       for (const claim of claims) {
         const amount = parseFloat(claim.amount);
         const type = claim.reward_type;
         const user = claim.username;
         const p = claim.period;
+        const s = claim.site || 'acebet';
         categoryTotals[type] = (categoryTotals[type] || 0) + amount;
         categoryCounts[type] = (categoryCounts[type] || 0) + 1;
         if (!userTotals[user]) userTotals[user] = 0;
         userTotals[user] += amount;
         if (!userClaims[user]) userClaims[user] = [];
         userClaims[user].push(claim);
-        if (period === 'all') { periodTotals[p] = (periodTotals[p] || 0) + amount; }
+        if (period === 'all') periodTotals[p] = (periodTotals[p] || 0) + amount;
+        if (siteFilter === 'all') siteTotals[s] = (siteTotals[s] || 0) + amount;
       }
       const grandTotal = Object.values(categoryTotals).reduce((a,b) => a+b, 0);
       const uniqueUsers = Object.keys(userTotals).length;
       let msg = `💸 **Payouts — ${periodLabel}**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      if (siteFilter === 'all' && Object.keys(siteTotals).length > 1) {
+        msg += `🌐 **By Site**\n`;
+        for (const [s, total] of Object.entries(siteTotals)) {
+          msg += `• ${s === 'luxdrop' ? 'LuxDrop' : 'Acebet'}: **$${total.toFixed(2)}**\n`;
+        }
+        msg += `\n`;
+      }
       if (period === 'all') {
         msg += `📅 **By Period**\n`;
         for (const [p, total] of Object.entries(periodTotals).sort((a,b) => a[0]-b[0])) {
@@ -812,7 +846,8 @@ client.on('interactionCreate', async interaction => {
           const date = new Date(c.timestamp).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true, timeZone:'America/New_York' });
           const netNote = c.net_loss ? ` (net loss: $${parseFloat(c.net_loss).toFixed(2)})` : '';
           const pNote = period === 'all' ? ` [P${c.period}]` : '';
-          msg += `  🔵 ${REWARD_TYPE_NAMES[c.reward_type]||c.reward_type}: $${parseFloat(c.amount).toFixed(2)}${netNote}${pNote} — ${date} EST\n`;
+          const siteNote = siteFilter === 'all' ? ` [${c.site === 'luxdrop' ? 'LuxDrop' : 'Acebet'}]` : '';
+          msg += `  🔵 ${REWARD_TYPE_NAMES[c.reward_type]||c.reward_type}: $${parseFloat(c.amount).toFixed(2)}${netNote}${pNote}${siteNote} — ${date} EST\n`;
         }
       }
       msg += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💰 **Grand Total Paid: $${grandTotal.toFixed(2)}** across ${claims.length} claim${claims.length!==1?'s':''}`;
