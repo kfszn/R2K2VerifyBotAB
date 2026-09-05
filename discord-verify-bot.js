@@ -92,11 +92,26 @@ const REWARD_TYPE_CHOICES_WITH_ALL = [
 const SITE_CHOICES = [
   { name: 'Acebet', value: 'acebet' },
   { name: 'LuxDrop', value: 'luxdrop' },
+  { name: 'Roobet', value: 'roobet' },
 ];
 const SITE_CHOICES_WITH_ALL = [
   ...SITE_CHOICES,
   { name: 'All Sites', value: 'all' },
 ];
+
+// We moved affiliate partners mid-tracking: Periods 1-8 were run on Acebet,
+// Period 9 onward moved to Roobet. Historical Acebet rows are kept in the
+// `rewards` table (site = 'acebet') for tracking purposes and are never
+// overwritten — this just changes which site new claims default to.
+const ROOBET_CUTOVER_PERIOD = 9;
+function getSiteForPeriod(period) {
+  return period >= ROOBET_CUTOVER_PERIOD ? 'roobet' : 'acebet';
+}
+function siteDisplayName(site) {
+  if (site === 'luxdrop') return 'LuxDrop';
+  if (site === 'roobet') return 'Roobet';
+  return 'Acebet';
+}
 
 async function loadLinks() {
   try {
@@ -322,7 +337,7 @@ async function registerCommands() {
       .addStringOption(o => o.setName('reward_type').setDescription('Type of reward').setRequired(true).addChoices(...REWARD_TYPE_CHOICES))
       .addNumberOption(o => o.setName('amount').setDescription('Amount being paid').setRequired(true))
       .addIntegerOption(o => o.setName('period').setDescription('Period number (1-12)').setRequired(true).setMinValue(1).setMaxValue(12))
-      .addStringOption(o => o.setName('site').setDescription('Platform (default: acebet)').setRequired(false).addChoices(...SITE_CHOICES))
+      .addStringOption(o => o.setName('site').setDescription('Platform (default: auto by period — P1-8 Acebet, P9+ Roobet)').setRequired(false).addChoices(...SITE_CHOICES))
       .addNumberOption(o => o.setName('net_loss').setDescription('Net loss value (for lossback only)').setRequired(false)),
     new SlashCommandBuilder()
       .setName('claimed').setDescription('View claim history for a user (Staff/Owner only)')
@@ -686,7 +701,7 @@ client.on('interactionCreate', async interaction => {
     const rewardType = interaction.options.getString('reward_type');
     const amount = interaction.options.getNumber('amount');
     const period = interaction.options.getInteger('period');
-    const site = interaction.options.getString('site') || 'acebet';
+    const site = interaction.options.getString('site') || getSiteForPeriod(period);
     const netLoss = interaction.options.getNumber('net_loss');
     await interaction.deferReply({ ephemeral: false });
     try {
@@ -696,7 +711,7 @@ client.on('interactionCreate', async interaction => {
         net_loss: (rewardType === 'lossback' && netLoss !== null) ? netLoss : null,
         site
       });
-      const siteLabel = site === 'luxdrop' ? 'LuxDrop' : 'Acebet';
+      const siteLabel = siteDisplayName(site);
       const netLossNote = (rewardType === 'lossback' && netLoss !== null) ? `\n(Net Loss: $${netLoss.toFixed(2)})` : '';
       await interaction.editReply(`✅ Successfully recorded **$${amount.toFixed(2)} ${REWARD_TYPE_NAMES[rewardType]}** for **${username}** on **${siteLabel}** in Period ${period}${netLossNote}`);
     } catch (error) {
@@ -729,7 +744,7 @@ client.on('interactionCreate', async interaction => {
         claims = result.rows;
       }
 
-      const siteLabel = siteFilter === 'all' ? 'All Sites' : siteFilter === 'luxdrop' ? 'LuxDrop' : 'Acebet';
+      const siteLabel = siteFilter === 'all' ? 'All Sites' : siteDisplayName(siteFilter);
 
       if (claims.length === 0) {
         const periodLabel = period === 'all' ? 'any period' : `Period ${period}`;
@@ -758,7 +773,7 @@ client.on('interactionCreate', async interaction => {
         for (const [type, data] of Object.entries(byType)) {
           typeBreakdown += `💠 **${REWARD_TYPE_NAMES[type]||type}:** $${data.total.toFixed(2)} (${data.count} claim${data.count>1?'s':''})\n`;
         }
-        let siteBreakdown = siteFilter === 'all' ? '\n**By Site:**\n' + Object.entries(bySite).map(([s,t]) => `🌐 **${s === 'luxdrop' ? 'LuxDrop' : 'Acebet'}:** $${t.toFixed(2)}`).join('\n') + '\n' : '';
+        let siteBreakdown = siteFilter === 'all' ? '\n**By Site:**\n' + Object.entries(bySite).map(([s,t]) => `🌐 **${siteDisplayName(s)}:** $${t.toFixed(2)}`).join('\n') + '\n' : '';
         const typeLabel = rewardType === 'all' ? 'All Types' : REWARD_TYPE_NAMES[rewardType]||rewardType;
         await interaction.editReply(`📊 **All-Time Claims — ${typeLabel} | ${siteLabel}**\nUsername: **${username}**\n\n**By Period:**\n${periodBreakdown}${siteBreakdown}\n**By Type:**\n${typeBreakdown}\n💰 **Total All-Time: $${grandTotal.toFixed(2)}** (${claims.length} claims)`);
       } else if (rewardType === 'all') {
@@ -770,7 +785,7 @@ client.on('interactionCreate', async interaction => {
       } else {
         const claimsList = claims.map((c, i) => {
           const date = new Date(c.timestamp).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true, timeZone:'America/New_York' });
-          const siteTag = siteFilter === 'all' ? ` [${c.site === 'luxdrop' ? 'LuxDrop' : 'Acebet'}]` : '';
+          const siteTag = siteFilter === 'all' ? ` [${siteDisplayName(c.site)}]` : '';
           return `**Claim #${i+1}:** $${parseFloat(c.amount).toFixed(2)}${siteTag} on ${date} EST`;
         }).join('\n');
         await interaction.editReply(`📊 **${REWARD_TYPE_NAMES[rewardType]} Claims - Period ${period} | ${siteLabel}**\nUsername: **${username}**\n\n${claimsList}\n\n💰 **Total Claimed This Period:** $${grandTotal.toFixed(2)}`);
@@ -785,7 +800,7 @@ client.on('interactionCreate', async interaction => {
     const periodRaw = interaction.options.getString('period');
     const period = periodRaw === 'all' ? 'all' : parseInt(periodRaw);
     const siteFilter = interaction.options.getString('site') || 'all';
-    const siteLabel = siteFilter === 'all' ? 'All Sites' : siteFilter === 'luxdrop' ? 'LuxDrop' : 'Acebet';
+    const siteLabel = siteFilter === 'all' ? 'All Sites' : siteDisplayName(siteFilter);
     const siteClause = siteFilter === 'all' ? '' : `AND site = '${siteFilter}'`;
     await interaction.deferReply({ ephemeral: true });
     try {
@@ -823,7 +838,7 @@ client.on('interactionCreate', async interaction => {
       if (siteFilter === 'all' && Object.keys(siteTotals).length > 1) {
         msg += `🌐 **By Site**\n`;
         for (const [s, total] of Object.entries(siteTotals)) {
-          msg += `• ${s === 'luxdrop' ? 'LuxDrop' : 'Acebet'}: **$${total.toFixed(2)}**\n`;
+          msg += `• ${siteDisplayName(s)}: **$${total.toFixed(2)}**\n`;
         }
         msg += `\n`;
       }
@@ -846,7 +861,7 @@ client.on('interactionCreate', async interaction => {
           const date = new Date(c.timestamp).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true, timeZone:'America/New_York' });
           const netNote = c.net_loss ? ` (net loss: $${parseFloat(c.net_loss).toFixed(2)})` : '';
           const pNote = period === 'all' ? ` [P${c.period}]` : '';
-          const siteNote = siteFilter === 'all' ? ` [${c.site === 'luxdrop' ? 'LuxDrop' : 'Acebet'}]` : '';
+          const siteNote = siteFilter === 'all' ? ` [${siteDisplayName(c.site)}]` : '';
           msg += `  🔵 ${REWARD_TYPE_NAMES[c.reward_type]||c.reward_type}: $${parseFloat(c.amount).toFixed(2)}${netNote}${pNote}${siteNote} — ${date} EST\n`;
         }
       }
